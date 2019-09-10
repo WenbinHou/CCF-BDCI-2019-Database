@@ -166,7 +166,7 @@ struct result_t
 };
 
 
-static constexpr size_t MAX_THREAD_COUNT = 32;
+static constexpr size_t MAX_THREAD_COUNT = 16;
 
 struct query_t
 {
