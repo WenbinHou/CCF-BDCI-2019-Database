@@ -173,7 +173,7 @@ void load_order_part(const iovec part, const size_t thread_idx)
     for (uint64_t i = 0; i < part.iov_len; ++i) {
         uint32_t order_key = 0;
         while (p[i] != '|') {
-            ASSERT(p[i] >= '0' && p[i] <= '9', "Unexpected char: 0x%02x (%c) (i=%llu)", p[i], p[i], i);
+            ASSERT(p[i] >= '0' && p[i] <= '9', "Unexpected char: 0x%02x (%c) (i=%lu)", p[i], p[i], i);
             order_key = order_key * 10 + (p[i] - '0');
             ++i;
         }
@@ -181,7 +181,7 @@ void load_order_part(const iovec part, const size_t thread_idx)
 
         uint32_t custkey = 0;
         while (p[i] != '|') {
-            ASSERT(p[i] >= '0' && p[i] <= '9', "Unexpected char: 0x%02x (%c) (i=%llu)", p[i], p[i], i);
+            ASSERT(p[i] >= '0' && p[i] <= '9', "Unexpected char: 0x%02x (%c) (i=%lu)", p[i], p[i], i);
             custkey = custkey * 10 + (p[i] - '0');
             ++i;
         }
@@ -322,7 +322,7 @@ int main(int argc, char* argv[])
                 ++i;
             }
             ++i;
-            ASSERT(custkey < max_custkey, "Unexpected custkey (too large): %" PRIu64, custkey);
+            ASSERT(custkey < max_custkey, "Unexpected custkey (too large): %lu", custkey);
 
             char mktsegment[16];
             int mktsegment_pos = 0;
@@ -340,9 +340,9 @@ int main(int argc, char* argv[])
                 g_custkey_to_mktsegment[custkey] = 0;
             }
 
-            //DEBUG("%llu -> %s", custkey, mktsegment);
+            //DEBUG("%lu -> %s", custkey, mktsegment);
             //TODO: remove these 2 lines...
-            ASSERT(custkey == last_custkey + 1, "custkey: %llu, last_custkey: %llu", custkey, last_custkey);
+            ASSERT(custkey == last_custkey + 1, "custkey: %lu, last_custkey: %lu", custkey, last_custkey);
             last_custkey = custkey;
         }
 
@@ -384,7 +384,7 @@ int main(int argc, char* argv[])
         }
 
         for (size_t t = 0; t < g_thread_count; ++t) {
-            DEBUG("orders part_%u: base=%p, len=0x%llx", (unsigned)t, parts[t].iov_base, (uint64_t)parts[t].iov_len);
+            DEBUG("orders part_%u: base=%p, len=0x%lx", (unsigned)t, parts[t].iov_base, (uint64_t)parts[t].iov_len);
         }
 
         for (size_t t = 0; t < g_thread_count; ++t) {
