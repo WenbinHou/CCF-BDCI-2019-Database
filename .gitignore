@@ -11,3 +11,7 @@ obj/
 # Data files
 /data/*.txt
 
+# Submit files
+/submit/
+/submit.zip
+
