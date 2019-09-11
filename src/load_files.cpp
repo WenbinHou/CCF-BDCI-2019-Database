@@ -8,8 +8,8 @@ void open_file_mapping(
     //const int fd = C_CALL(open(file, O_RDONLY | O_DIRECT | O_SYNC | O_CLOEXEC));
     const int fd = C_CALL(open(file, O_RDONLY | O_CLOEXEC));
 
-    struct stat64 st { };
-    C_CALL(fstat64(fd, &st));
+    struct stat st { };
+    C_CALL(fstat(fd, &st));
     mapped->iov_len = st.st_size;
 
 #if !defined(MAP_HUGE_2MB)

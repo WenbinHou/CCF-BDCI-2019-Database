@@ -13,6 +13,6 @@ time ../src/BDCI19.out \
     \
     | tee "$(basename "$0").stdout"
 
-
+echo
 diff "$(basename "$0").stdout" "$(basename "$0").result"
 
