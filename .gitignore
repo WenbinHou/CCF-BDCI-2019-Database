@@ -8,9 +8,6 @@ obj/
 *.o
 *.out
 
-# Running results
-/*.txt
-
 # Data files
 /data/*.txt
 
