@@ -7,8 +7,8 @@
 const std::chrono::steady_clock::time_point g_startup_time = std::chrono::steady_clock::now();
 volatile uint64_t g_dummy_prevent_optimize;
 
-std::vector<query_t> g_queries[256];  // query bucket by mktsegment
-std::vector<query_t*> g_queries_by_id;
+std::vector<query_t> g_all_queries;
+std::vector<size_t> g_query_by_mktsegment[256];  // query bucket by mktsegment
 std::vector<uint8_t> g_custkey_to_mktsegment;
 size_t g_thread_count;
 iovec g_mapped_customer, g_mapped_orders, g_mapped_lineitem;
@@ -208,7 +208,8 @@ void load_order_part(const iovec part, const size_t thread_idx)
         while (forward_lineitem_state(state, &item, order_key)) {
             // Found an item matching order_key
             //INFO("item: order_key=%u, expend_cent=%u", item.order_key, item.expend_cent);
-            for (query_t& query : g_queries[mktsegment_id]) {
+            for (size_t query_id : g_query_by_mktsegment[mktsegment_id]) {
+                query_t& query = g_all_queries[query_id];
                 ASSERT(query.mktsegment_id == mktsegment_id, "BUG...");
                 if (order_date.value < query.order_date.value) {
                     //DEBUG("order_date: %04u-%02u-%02u < query_order_date: %04u-%02u-%02u",
@@ -222,7 +223,8 @@ void load_order_part(const iovec part, const size_t thread_idx)
             }
         }
 
-        for (query_t& query : g_queries[mktsegment_id]) {
+        for (size_t query_id : g_query_by_mktsegment[mktsegment_id]) {
+            query_t& query = g_all_queries[query_id];
             if (query.tmp_total_expend_cent[thread_idx] > 0) {
                 bool do_insert = false;
                 if (query.top_n[thread_idx].size() < query.limit_count) {
@@ -259,6 +261,7 @@ int main(int argc, char* argv[])
     std::map<const char*, uint8_t, cstring_less> all_mktsegment;
     uint8_t max_mktsegment_id = 0;  // mktsegment: 1, 2, 3, ..., max_mktsegment_id
     const int query_count = std::atoi(argv[4]);
+
     {
         ASSERT(query_count >= 1, "Unexpected query count: %d", query_count);
         DEBUG("totally query count: %d", query_count);
@@ -281,14 +284,14 @@ int main(int argc, char* argv[])
             query.order_date = parse_date(order_date);
             query.ship_date = parse_date(ship_date);
             query.limit_count = std::stoi(limit_count);
+            query.next_query = nullptr;
             TRACE("query: mktsegment_id=%u, order_date=%u-%u-%u, ship_date=%u-%u-%u, limit=%u",
                 query.mktsegment_id,
                 query.order_date.year, query.order_date.month, query.order_date.day,
                 query.ship_date.year, query.ship_date.month, query.ship_date.day,
                 query.limit_count);
-
-            g_queries[mktsegment_id].emplace_back(std::move(query));
-            g_queries_by_id.emplace_back(&g_queries[mktsegment_id].back());
+            g_all_queries.emplace_back(std::move(query));
+            g_query_by_mktsegment[mktsegment_id].emplace_back(g_all_queries.size() - 1);
         }
     }
     DEBUG("queried mktsegment count: %d", (int)all_mktsegment.size());
@@ -406,41 +409,40 @@ int main(int argc, char* argv[])
     //
     INFO("finally, print results...");
     std::vector<result_t> results;
-    for (uint8_t i = 1; !g_queries[i].empty(); ++i) {        
-        for (auto& query : g_queries[i]) {
-            std::priority_queue<result_t, std::vector<result_t>, std::greater<result_t>> final_top_n;
-            for (size_t t = 0; t < g_thread_count; ++t) {
-                while (!query.top_n[t].empty()) {
-                    bool do_insert = false;
-                    if (final_top_n.size() < query.limit_count) {
+
+    for (auto& query : g_all_queries) {
+        std::priority_queue<result_t, std::vector<result_t>, std::greater<result_t>> final_top_n;
+        for (size_t t = 0; t < g_thread_count; ++t) {
+            while (!query.top_n[t].empty()) {
+                bool do_insert = false;
+                if (final_top_n.size() < query.limit_count) {
+                    do_insert = true;
+                }
+                else {  // final_top_n.size() >= query.limit_count
+                    if (final_top_n.top().total_expend_cent < query.top_n[t].top().total_expend_cent) {
+                        final_top_n.pop();
                         do_insert = true;
                     }
-                    else {  // final_top_n.size() >= query.limit_count
-                        if (final_top_n.top().total_expend_cent < query.top_n[t].top().total_expend_cent) {
-                            final_top_n.pop();
-                            do_insert = true;
-                        }
-                    }
-                    if (do_insert) {
-                        final_top_n.emplace(query.top_n[t].top());
-                    }
-                    query.top_n[t].pop();
                 }
+                if (do_insert) {
+                    final_top_n.emplace(query.top_n[t].top());
+                }
+                query.top_n[t].pop();
             }
+        }
 
-            results.clear();
-            while (!final_top_n.empty()) {
-                results.emplace_back(final_top_n.top());
-                final_top_n.pop();
-            }
+        results.clear();
+        while (!final_top_n.empty()) {
+            results.emplace_back(final_top_n.top());
+            final_top_n.pop();
+        }
 
-            fprintf(stdout, "l_orderkey|o_orderdate|revenue\n");
-            for (size_t idx = results.size() - 1; idx != (size_t)-1; --idx) {
-                const result_t* it = &results[idx];
-                fprintf(stdout, "%u|%u-%02u-%02u|%u.%02u\n",
-                    it->order_key, it->order_date.year, it->order_date.month, it->order_date.day,
-                    it->total_expend_cent / 100, it->total_expend_cent % 100);
-            }
+        fprintf(stdout, "l_orderkey|o_orderdate|revenue\n");
+        for (size_t idx = results.size() - 1; idx != (size_t)-1; --idx) {
+            const result_t* it = &results[idx];
+            fprintf(stdout, "%u|%u-%02u-%02u|%u.%02u\n",
+                it->order_key, it->order_date.year, it->order_date.month, it->order_date.day,
+                it->total_expend_cent / 100, it->total_expend_cent % 100);
         }
     }
     fflush(stdout);

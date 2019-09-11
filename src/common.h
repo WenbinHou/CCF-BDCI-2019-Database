@@ -178,6 +178,7 @@ struct query_t
 
     uint32_t tmp_total_expend_cent[MAX_THREAD_COUNT] { };
     std::priority_queue<result_t, std::vector<result_t>, std::greater<result_t>> top_n[MAX_THREAD_COUNT];
+    query_t* next_query;
 };
 
 
