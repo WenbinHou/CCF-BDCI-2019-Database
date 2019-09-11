@@ -1,6 +1,8 @@
 # Ignore Visual Studio files
-/bin/
-/obj/
+bin/
+obj/
+/.vs/
+*.user
 
 # Compile resutls
 *.o

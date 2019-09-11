@@ -1,0 +1,32 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="src">
+      <UniqueIdentifier>{d0b78b73-98e0-474b-9d41-9d1ec2a40fab}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="references">
+      <UniqueIdentifier>{96a05de5-7ca5-4868-b81b-95c2da571069}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\common.h">
+      <Filter>src</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\load_files.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\main.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="references\P100-spec.md">
+      <Filter>references</Filter>
+    </None>
+    <None Include="references\pascal-architecture-whitepaper.pdf">
+      <Filter>references</Filter>
+    </None>
+  </ItemGroup>
+</Project>
