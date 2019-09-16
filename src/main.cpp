@@ -1,342 +1,282 @@
 #include "common.h"
 
-
 //==============================================================
 // Global variables
 //==============================================================
 const std::chrono::steady_clock::time_point g_startup_time = std::chrono::steady_clock::now();
-volatile uint64_t g_dummy_prevent_optimize;
+volatile uint64_t g_dummy_prevent_optimize; 
 
-std::vector<query_t> g_all_queries;
-std::vector<size_t> g_query_by_mktsegment[256];  // query bucket by mktsegment
-std::vector<uint8_t> g_custkey_to_mktsegment;
-size_t g_thread_count;
-iovec g_mapped_customer, g_mapped_orders, g_mapped_lineitem;
+uint8_t g_max_mktsegment = 0;
+std::map<const char*, uint8_t, c_string_less> g_string_to_mktsegment;
+
+uint32_t g_query_count;
+std::atomic_uint32_t g_synthesis_query_count { 0 };
+std::pair<uint32_t /*mktsegment*/, uint32_t /*bucket_index*/> g_all_queries[256];
+std::vector<query_t> g_queries_by_mktsegment[256];
+
+std::vector<std::thread> g_workers;
+uint32_t g_workers_thread_count;
+threads_barrier_t g_workers_barrier;
+threads_barrier_t g_workers_barrier_external;
+
+std::vector<std::thread> g_loaders;
+uint32_t g_loaders_thread_count;
+threads_barrier_t g_loaders_barrier;
+
+//iovec g_mapped_customer, g_mapped_orders, g_mapped_lineitem;
+int g_customer_fd, g_orders_fd, g_lineitem_fd;
+uint64_t g_customer_filesize, g_orders_filesize, g_lineitem_filesize;
+const char *g_customer_filepath, *g_orders_filepath, *g_lineitem_filepath;
+mpmc_queue_t<mapped_file_part_t> g_mapped_customer_queue, g_mapped_orders_queue, g_mapped_lineitem_queue;
+
+uint64_t g_upbound_custkey;
+uint8_t* g_custkey_to_mktsegment;
+
+uint64_t g_upbound_orderkey;
+date_t* g_orderkey_to_order;
 
 
-struct cstring_less
+
+void load_queries(
+    [[maybe_unused]] const int argc,
+    char* const argv[])
 {
-    bool operator() (const char* const str1, const char* const str2) const noexcept
-    {
-        return strcmp(str1, str2) < 0;
+    ASSERT(argc >= 5, "Unexpected argc too small: %d", argc);
+
+    g_query_count = (uint32_t)strtol(argv[4], nullptr, 10);
+    DEBUG("g_query_count: %u", g_query_count);
+
+    for (uint32_t query_idx = 0; query_idx < g_query_count; ++query_idx) {
+        uint8_t mktsegment;
+        const char* const str_mktsegment = argv[5 + query_idx * 4 + 0];
+        const auto it = g_string_to_mktsegment.find(str_mktsegment);
+        if (it != g_string_to_mktsegment.end()) {
+            mktsegment = it->second;
+        }
+        else {
+            g_string_to_mktsegment[str_mktsegment] = ++g_max_mktsegment;
+            mktsegment = g_max_mktsegment;
+            DEBUG("// found new mktsegment: %s -> %u", str_mktsegment, g_max_mktsegment);
+        }
+
+        const size_t bucket_index = g_queries_by_mktsegment[mktsegment].size();
+        g_queries_by_mktsegment[mktsegment].resize(bucket_index + 1);  // usually O(1)
+        query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
+        query.query_index = query_idx;
+
+        query.q_mktsegment = mktsegment;
+        query.q_orderdate.parse(argv[5 + query_idx * 4 + 1], 0x00);
+        query.q_shipdate.parse(argv[5 + query_idx * 4 + 2], 0xff);
+        query.q_limit = (uint32_t)strtol(argv[5 + query_idx * 4 + 3], nullptr, 10);
+
+        TRACE("query#%u: q_mktsegment=%u, q_orderdate=%04u-%02u-%02u, q_shipdate=%04u-%02u-%02u, q_limit=%u",
+            query_idx, query.q_mktsegment,
+            query.q_orderdate.year(), query.q_orderdate.month(), query.q_orderdate.day(),
+            query.q_shipdate.year(), query.q_shipdate.month(), query.q_shipdate.day(),
+            query.q_limit);
     }
-};
 
+    // Sort queries in each bucket by their q_orderdate (descending)
+    for (uint32_t mktsegment = 1; mktsegment <= g_max_mktsegment; ++mktsegment) {
+        std::sort(
+            g_queries_by_mktsegment[mktsegment].begin(),
+            g_queries_by_mktsegment[mktsegment].end(),
+            [](const query_t& a, const query_t& b) noexcept {
+                return a.q_orderdate > b.q_orderdate;
+            });
 
-struct lineitem_state_t
-{
-    const char* ptr = nullptr;
-};
+        TRACE("------------------------------------------------");
+        TRACE("total queries on mktsegment#%u: %" PRIu64, mktsegment, (uint64_t)g_queries_by_mktsegment[mktsegment].size());
+        for (size_t bucket_index = 0; bucket_index < g_queries_by_mktsegment[mktsegment].size(); ++bucket_index) {
+            const query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
+            TRACE("    query#%u: q_mktsegment=%u, q_orderdate=%04u-%02u-%02u, q_shipdate=%04u-%02u-%02u, q_limit=%u",
+                query.query_index, query.q_mktsegment,
+                query.q_orderdate.year(), query.q_orderdate.month(), query.q_orderdate.day(),
+                query.q_shipdate.year(), query.q_shipdate.month(), query.q_shipdate.day(),
+                query.q_limit);
 
-struct lineitem_t
-{
-    uint32_t order_key;
-    uint32_t expend_cent;
-    date_t ship_date;
-};
-
-static inline __attribute__((always_inline))
-bool forward_lineitem_state(
-    /*inout*/ lineitem_state_t& state,
-    /*out*/ lineitem_t* item,
-    const uint32_t expected_order_key)
-{
-    ASSERT(state.ptr != nullptr, "BUG...");
-    const char* const end = (const char*)g_mapped_lineitem.iov_base + g_mapped_lineitem.iov_len;
-    while (state.ptr < end) {
-        //DEBUG(">>>>>>>>>>>> (expected_order_key=%u) %.*s", expected_order_key, 16, state.ptr);
-        const char* const old_state_ptr = state.ptr;
-        uint32_t order_key = 0;
-        while (*state.ptr != '|') {
-            ASSERT(*state.ptr >= '0' && *state.ptr <= '9', "Unexpected char: 0x%02x (%c)", *state.ptr, *state.ptr);
-            order_key = order_key * 10 + (*state.ptr - '0');
-            ++state.ptr;
-        }
-        ++state.ptr;  // skip '|'
-
-        if (order_key < expected_order_key) {  // just skip this line
-            while (*state.ptr != '\n') {
-                ++state.ptr;
-            }
-            ++state.ptr;  // skip '\n'
-        }
-        else if (order_key == expected_order_key) {
-            uint32_t expend_cent = 0;
-            while (*state.ptr != '|') {
-                if (*state.ptr != '.') {
-                    ASSERT(*state.ptr >= '0' && *state.ptr <= '9', "Unexpected char: 0x%02x (%c)", *state.ptr, *state.ptr);
-                    expend_cent = expend_cent * 10 + (*state.ptr - '0');
-                }
-                ++state.ptr;
-            }
-            ++state.ptr;  // skip '|'
-
-            const date_t ship_date = parse_date(state.ptr);  // read yyyy-MM-dd
-            state.ptr += 10;  // skip yyyy-MM-dd
-            ASSERT(*state.ptr == '\n', "Expects EOL, but got %c", *state.ptr);
-            ++state.ptr;
-
-            item->order_key = order_key;
-            item->expend_cent = expend_cent;
-            item->ship_date = ship_date;
-
-            return true;
-        }
-        else {  // order_key > expected_order_key
-            // TODO: optimize out this! (save this in a space for future use)
-            state.ptr = old_state_ptr;
-            return false;
+            // Fill g_all_queries
+            g_all_queries[query.query_index] = std::make_pair((uint32_t)mktsegment, (uint32_t)bucket_index);
         }
     }
-    return false;  // reached EOF
 }
 
 
-void find_start_address_in_lineitem(
-    /*inout*/ lineitem_state_t& state,
-    const uint32_t order_key)
-{
-    // Find first row in lineitem table, whose row.order_key >= order_key
-    // Set `state.ptr` to start address of that line
-    const char* const p = (const char*)g_mapped_lineitem.iov_base;
-    
-    const auto align_to_line = [&](const char* s) -> const char* {
-        while (s > p) {
-            if (s[-1] == '\n') break;
-            --s;
-        }
-        return s;
-    };
-    
-    const auto read_order_key = [](const char* s) -> uint32_t {
-        uint32_t order_key = 0;
-        while (*s != '|') {
-            ASSERT(*s >= '0' && *s <= '9', "Unexpected char: 0x%02x (%c)", *s, *s);
-            order_key = order_key * 10 + (*s - '0');
-            ++s;
-        }
-        return order_key;
-    };
 
-    const char* p_start = (const char*)g_mapped_lineitem.iov_base;
-    const char* p_end = (const char*)g_mapped_lineitem.iov_base + g_mapped_lineitem.iov_len;
+FORCEINLINE void open_file_mapping_multi_part(
+    /*in*/[[maybe_unused]] const char* const file,
+    /*in*/ const uint32_t tid,
+    /*inout*/ std::atomic_uint64_t& shared_offset,
+    /*in*/ const int fd,
+    /*in*/ const uint64_t total_size,
+    /*in*/ const uint64_t step_size,
+    /*inout*/ mpmc_queue_t<mapped_file_part_t>& queue)
+{
+    DEBUG("[loader:%u] %s starts mapping", tid, file);
+
     while (true) {
-        const char* p_mid = align_to_line(p_start + (p_end - p_start) / 2);
-        if (p_mid == p_start) break;
-        const uint32_t mid_order_key = read_order_key(p_mid);
-        if (mid_order_key >= order_key) {
-            p_end = p_mid;
+        const uint64_t off = shared_offset.fetch_add(step_size);
+        if (off >= total_size) {
+            //INFO("=============== total_size: %lu, off: %lu", total_size, off);
+            break;
         }
-        else {  // mid_order_key < order_key
-            p_start = p_mid;
+
+        mapped_file_part_t part;
+        part.is_first = (off == 0);
+        part.is_last = false;
+        uint64_t desired_size = step_size;
+        uint64_t map_size = step_size + 4096;
+        if (off + desired_size >= total_size) {
+            map_size = total_size - off;
+            desired_size = total_size - off;
+            part.is_last = true;
         }
+        part.map_size = map_size;
+
+        part.start = (const char*)mmap(
+            nullptr,
+            map_size,
+            PROT_READ,
+            MAP_PRIVATE | MAP_POPULATE,
+            fd,
+            off);
+        if (UNLIKELY(part.start == MAP_FAILED)) {
+            PANIC("mmap() failed. errno = %d (%s)", errno, strerror(errno));
+        }
+        part.desired_end = part.start + desired_size;
+
+        DEBUG("[loader:%u] %s mapped to %p (total_size=%" PRIu64 ", offset=%" PRIu64 ", desired_size=%" PRIu64 ", map_size=%" PRIu64 ")",
+            tid, file, part.start, total_size, off, desired_size, map_size);
+        ASSERT(part.start != nullptr, "BUG: push: part.start == nullptr");
+        ASSERT(part.desired_end != nullptr, "BUG: push: part.desired_end == nullptr");
+        queue.push(part);
     }
+    DEBUG("[loader:%u] %s all mapped", tid, file);
 
-    DEBUG("found starting address in lineitem for order_key %u: %p >>> %.*s...", order_key, p_start, 20, p_start);
-    state.ptr = p_start;
-
-
-    // Create a thread to preload current part of lineitem
-    iovec vec;
-    vec.iov_base = (void*)p_start;
-    vec.iov_len = std::min<size_t>(
-        g_mapped_lineitem.iov_len / g_thread_count,
-        g_mapped_lineitem.iov_len - ((uintptr_t)p_start - (uintptr_t)g_mapped_lineitem.iov_base));
-    std::thread(preload_memory_range, vec).detach();
 }
 
 
-void load_order_part(const iovec part, const size_t thread_idx)
+/*
+// worker_load_customer: split to g_workers_thread_count workers
+// But it turns out that the workloads are not evenly distributed!
+
+void worker_load_customer(const uint32_t tid)
 {
-#if ENABLE_PROFILING
-    const auto start_time = std::chrono::steady_clock::now();
-#endif
+    static const char* __customer_starts[MAX_WORKER_THREADS + 1];
 
-    lineitem_state_t state { };
+    const char* start = (const char*)g_mapped_customer.iov_base + g_mapped_customer.iov_len / g_workers_thread_count * tid;
+    while (start > (const char*)g_mapped_customer.iov_base) {
+        if (start[-1] == '\n') break;
+        --start;
+    }
+    __customer_starts[tid] = start;
+    if (tid == 0) __customer_starts[g_workers_thread_count] = (const char*)g_mapped_customer.iov_base + g_mapped_customer.iov_len;
 
-    /* The table looks like:
-        order_key|cust_key|order_date
+    g_workers_barrier.sync();
+    //if (tid == 0) {
+    //    // Launch a thread for pre-fault mapped file
+    //    std::thread([]() {
+    //        const char* customer_ends[MAX_WORKER_THREADS];
+    //        uint64_t max_length = 0;
+    //        for (uint32_t t = 0; t < g_workers_thread_count; ++t) {
+    //            customer_ends[t] = __customer_starts[t + 1];
+    //            max_length = std::max(max_length, (uint64_t)(customer_ends[t] - __customer_starts[t]));
+    //        }
 
-        599999943|454411|1996-03-31
-        599999968|2271617|1995-12-14
-        599999969|4063478|1994-04-20
-        599999970|14864260|1993-10-19
-        599999971|13602718|1992-02-18
-        599999972|5864876|1994-03-09
-        599999973|5956910|1996-03-04
-        599999974|7780136|1997-06-24
-        599999975|5730910|1994-04-05
-        600000000|4400869|1997-12-02
-    */
-    const char* const p = (const char*)part.iov_base;
+    //        uint32_t dummy = 0;
+    //        const uint64_t STEP_SIZE = 4096;
+    //        for (uint64_t off = 0; off < max_length; off += STEP_SIZE) {
+    //            for (uint32_t t = 0; t < g_workers_thread_count; ++t) {
+    //                if (__customer_starts[t] + off < customer_ends[t]) {
+    //                    dummy += *(__customer_starts[t] + off);
+    //                }
+    //            }
+    //        }
+    //        g_dummy_prevent_optimize = dummy;
 
-    for (uint64_t i = 0; i < part.iov_len; ++i) {
-        uint32_t order_key = 0;
-        while (p[i] != '|') {
-            ASSERT(p[i] >= '0' && p[i] <= '9', "Unexpected char: 0x%02x (%c) (i=%lu)", p[i], p[i], i);
-            order_key = order_key * 10 + (p[i] - '0');
-            ++i;
-        }
-        ++i;  // skip '|'
+    //        DEBUG("pre-fault customer done. dummy = %u", dummy);
+    //    }).detach();
+    //}
 
+    const char* const end = __customer_starts[tid + 1];
+    TRACE("[%u] customer [%p,%p)", tid, start, end);
+
+    uint32_t last_custkey = 0;
+    const char* p = start;
+    while (p < end) {
         uint32_t custkey = 0;
-        while (p[i] != '|') {
-            ASSERT(p[i] >= '0' && p[i] <= '9', "Unexpected char: 0x%02x (%c) (i=%lu)", p[i], p[i], i);
-            custkey = custkey * 10 + (p[i] - '0');
-            ++i;
+        while (*p != '|') {
+            ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+            custkey = custkey * 10 + (*p - '0');
+            ++p;
         }
-        ++i;  // skip '|'
+        ++p;  // skip '|'
+        ASSERT(custkey < g_custkey_to_mktsegment.size(), "Unexpected custkey (too large): %u", custkey);
 
-        const date_t order_date = parse_date(&p[i]);  // read yyyy-MM-dd
-        i += 10;  // skip yyyy-MM-dd
-        ASSERT(p[i] == '\n', "Expects EOL, but got %c", p[i]);
-
-        //DEBUG("%u %u", order_key, cust_key);
-        const uint8_t mktsegment_id = g_custkey_to_mktsegment[custkey];
-        if (UNLIKELY(mktsegment_id == 0)) {  // we don't care about this customer (not queried)
-            continue;
+        char str_mktsegment[16];
+        int mktsegment_pos = 0;
+        while (*p != '\n') {
+            str_mktsegment[mktsegment_pos++] = *p;
+            ++p;
         }
+        ++p;  // skip '\n'
+        str_mktsegment[mktsegment_pos] = '\0';
 
-        // (One time) init in lineitem
-        if (UNLIKELY(state.ptr == nullptr)) {
-            find_start_address_in_lineitem(state, order_key);
-            ASSERT(state.ptr != nullptr, "BUG... find_start_address_in_lineitem() not found?!");
+        const auto& it = g_string_to_mktsegment.find(str_mktsegment);
+        if (it != g_string_to_mktsegment.end()) {
+            g_custkey_to_mktsegment[custkey] = it->second;
         }
-
-        // Forward state.ptr until reaching lineitem.order_key > orders.order_key
-        lineitem_t item;
-        while (forward_lineitem_state(state, &item, order_key)) {
-            // Found an item matching order_key
-            //INFO("item: order_key=%u, expend_cent=%u", item.order_key, item.expend_cent);
-            for (size_t query_id : g_query_by_mktsegment[mktsegment_id]) {
-                query_t& query = g_all_queries[query_id];
-                ASSERT(query.mktsegment_id == mktsegment_id, "BUG...");
-                if (order_date.value < query.order_date.value) {
-                    //DEBUG("order_date: %04u-%02u-%02u < query_order_date: %04u-%02u-%02u",
-                    //    order_date.year, order_date.month, order_date.day,
-                    //    query.order_date.year, query.order_date.month, query.order_date.day);
-
-                    if (item.ship_date.value > query.ship_date.value) {
-                        query.tmp_total_expend_cent[thread_idx] += item.expend_cent;
-                    }
-                }
-            }
+        else {
+            g_custkey_to_mktsegment[custkey] = 0;
         }
 
-        for (size_t query_id : g_query_by_mktsegment[mktsegment_id]) {
-            query_t& query = g_all_queries[query_id];
-            if (query.tmp_total_expend_cent[thread_idx] > 0) {
-                bool do_insert = false;
-                if (query.top_n[thread_idx].size() < query.limit_count) {
-                    do_insert = true;
-                }
-                else {  // query.top_n[thread_idx].size() >= query.limit_count
-                    if (query.top_n[thread_idx].top().total_expend_cent < query.tmp_total_expend_cent[thread_idx]) {
-                        query.top_n[thread_idx].pop();
-                        do_insert = true;
-                    }
-                }
-                if (do_insert) {
-                    query.top_n[thread_idx].emplace(order_key, order_date, query.tmp_total_expend_cent[thread_idx]);
-                    //DEBUG("update query_%u top_n: total_expend_cent=%u", query.query_id, query.tmp_total_expend_cent[thread_idx]);
-                }
-                query.tmp_total_expend_cent[thread_idx] = 0;
-            }
-        }
+        //DEBUG("%lu -> %s", custkey, mktsegment);
+        //TODO: remove these 2 lines...
+        ASSERT(last_custkey == 0 || custkey == last_custkey + 1, "custkey: %u, last_custkey: %u", custkey, last_custkey);
+        last_custkey = custkey;
     }
-
-#if ENABLE_PROFILING
-    const auto end_time = std::chrono::steady_clock::now();
-    std::chrono::duration<double> sec = end_time - start_time;
-    DEBUG("load order part_%u done: %.3lf sec", (unsigned)thread_idx, sec.count());
-#endif
 }
+*/
 
 
-int main(int argc, char* argv[])
+
+void worker_load_customer_multi_part(const uint32_t tid)
 {
-    //
-    // Load queries
-    //
-    std::map<const char*, uint8_t, cstring_less> all_mktsegment;
-    uint8_t max_mktsegment_id = 0;  // mktsegment: 1, 2, 3, ..., max_mktsegment_id
-    const int query_count = std::atoi(argv[4]);
-
-    {
-        ASSERT(query_count >= 1, "Unexpected query count: %d", query_count);
-        DEBUG("totally query count: %d", query_count);
-
-        for (int query_id = 0; query_id < query_count; ++query_id) {
-            const char* const mktsegment = argv[5 + query_id * 4 + 0];
-            const char* const order_date = argv[5 + query_id * 4 + 1];
-            const char* const ship_date = argv[5 + query_id * 4 + 2];
-            const char* const limit_count = argv[5 + query_id * 4 + 3];
-
-            uint8_t& mktsegment_id = all_mktsegment[mktsegment];
-            if (mktsegment_id == 0) {
-                mktsegment_id = ++max_mktsegment_id;
-                DEBUG("found new mktsegment: %s (id: %u)", mktsegment, mktsegment_id);
-            }
-
-            query_t query;
-            query.query_id = (uint8_t)query_id;
-            query.mktsegment_id = mktsegment_id;
-            query.order_date = parse_date(order_date);
-            query.ship_date = parse_date(ship_date);
-            query.limit_count = std::stoi(limit_count);
-            query.next_query = nullptr;
-            TRACE("query: mktsegment_id=%u, order_date=%u-%u-%u, ship_date=%u-%u-%u, limit=%u",
-                query.mktsegment_id,
-                query.order_date.year, query.order_date.month, query.order_date.day,
-                query.ship_date.year, query.ship_date.month, query.ship_date.day,
-                query.limit_count);
-            g_all_queries.emplace_back(std::move(query));
-            g_query_by_mktsegment[mktsegment_id].emplace_back(g_all_queries.size() - 1);
+    mapped_file_part_t part;
+    while (g_mapped_customer_queue.pop(part)) {
+        const char* p = part.start;
+        const char* end = part.desired_end;
+        if (!part.is_first) {
+            while (*p != '\n') ++p;
+            ++p;
         }
-    }
-    DEBUG("queried mktsegment count: %d", (int)all_mktsegment.size());
+        if (!part.is_last) {
+            while (*end != '\n') ++end;
+            ++end;
+        }
 
-
-    //
-    // Map input files to memory
-    //
-    std::thread thr = preload_files(argv[1], argv[2], argv[3], &g_mapped_customer, &g_mapped_orders, &g_mapped_lineitem);
-    //TODO: thr.detach();
-
-
-    //
-    // Load table: customers
-    //
-    {
-#if ENABLE_PROFILING
-        const auto start_time = std::chrono::steady_clock::now();
-#endif
-
-        const char* const p = (const char*)g_mapped_customer.iov_base;
-        const uint64_t max_custkey = g_mapped_customer.iov_len / 10;  // estimated max customer key
-        g_custkey_to_mktsegment.resize(max_custkey);
-
-        uint64_t last_custkey = 0;
-        for (uint64_t i = 0; i < g_mapped_customer.iov_len; ++i) {
-            uint64_t custkey = 0;
-            while (p[i] != '|') {
-                ASSERT(p[i] >= '0' && p[i] <= '9', "Unexpected char: %c", p[i]);
-                custkey = custkey * 10 + (p[i] - '0');
-                ++i;
+        //uint32_t last_custkey = 0;
+        while (p < end) {
+            uint32_t custkey = 0;
+            while (*p != '|') {
+                ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+                custkey = custkey * 10 + (*p - '0');
+                ++p;
             }
-            ++i;
-            ASSERT(custkey < max_custkey, "Unexpected custkey (too large): %lu", custkey);
+            ++p;  // skip '|'
+            ASSERT(custkey < g_upbound_custkey, "Unexpected custkey (too large): %u", custkey);
 
-            char mktsegment[16];
+            char str_mktsegment[16];
             int mktsegment_pos = 0;
-            while (p[i] != '\n') {
-                mktsegment[mktsegment_pos++] = p[i];
-                ++i;
+            while (*p != '\n') {
+                str_mktsegment[mktsegment_pos++] = *p;
+                ++p;
             }
-            mktsegment[mktsegment_pos] = '\0';
+            ++p;  // skip '\n'
+            str_mktsegment[mktsegment_pos] = '\0';
 
-            const auto& it = all_mktsegment.find(mktsegment);
-            if (it != all_mktsegment.end()) {
+            const auto& it = g_string_to_mktsegment.find(str_mktsegment);
+            if (it != g_string_to_mktsegment.end()) {
                 g_custkey_to_mktsegment[custkey] = it->second;
             }
             else {
@@ -345,109 +285,480 @@ int main(int argc, char* argv[])
 
             //DEBUG("%lu -> %s", custkey, mktsegment);
             //TODO: remove these 2 lines...
-            ASSERT(custkey == last_custkey + 1, "custkey: %lu, last_custkey: %lu", custkey, last_custkey);
-            last_custkey = custkey;
+            //ASSERT(last_custkey == 0 || custkey == last_custkey + 1, "custkey: %u, last_custkey: %u", custkey, last_custkey);
+            //last_custkey = custkey;
         }
 
-#if ENABLE_PROFILING
-        const auto end_time = std::chrono::steady_clock::now();
-        std::chrono::duration<double> sec = end_time - start_time;
-        DEBUG("load g_custkey_to_mktsegment done: %.3lf sec", sec.count());
-#endif
+        //C_CALL(munmap((void*)part.start, part.map_size));
     }
+}
 
 
-    //
-    // Load table: orders
-    //
-    g_thread_count = std::thread::hardware_concurrency();
-    if (g_thread_count > MAX_THREAD_COUNT) g_thread_count = MAX_THREAD_COUNT;
-    DEBUG("g_thread_count: %u", (unsigned)g_thread_count);
-    std::vector<std::thread> threads;
-    threads.resize(g_thread_count);
-    {
-        std::vector<iovec> parts;
-        parts.resize(g_thread_count);
-        void* last_p = g_mapped_orders.iov_base;
-        const char* max_p = (const char*)((uintptr_t)g_mapped_orders.iov_base + g_mapped_orders.iov_len - 1);
 
-        for (size_t t = 0; t < g_thread_count; ++t) {
-            parts[t].iov_base = last_p;
-            parts[t].iov_len = (g_mapped_orders.iov_len / g_thread_count);
-            const char* p = (const char*)((uintptr_t)parts[t].iov_base + parts[t].iov_len);
-            if (p > max_p) {
-                p = max_p;
+void worker_load_orders_multi_part(const uint32_t tid)
+{
+    mapped_file_part_t part;
+    while (g_mapped_orders_queue.pop(part)) {
+        const char* p = part.start;
+        const char* end = part.desired_end;
+        if (!part.is_first) {
+            while (*p != '\n') ++p;
+            ++p;
+        }
+        if (!part.is_last) {
+            while (*end != '\n') ++end;
+            ++end;
+        }
+
+        while (p < end) {
+            uint32_t orderkey = 0;
+            while (*p != '|') {
+                ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+                orderkey = orderkey * 10 + (*p - '0');
+                ++p;
+            }
+            ++p;  // skip '|'
+            ASSERT(orderkey < g_upbound_orderkey, "Unexpected orderkey (too large): %u", orderkey);
+
+            uint32_t custkey = 0;
+            while (*p != '|') {
+                ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+                custkey = custkey * 10 + (*p - '0');
+                ++p;
+            }
+            ++p;  // skip '|'
+
+            const uint8_t mktsegment = g_custkey_to_mktsegment[custkey];
+            g_orderkey_to_order[orderkey].parse(p, mktsegment);
+            p += 10;  // skip 'yyyy-MM-dd'
+
+            ASSERT(*p == '\n', "Expect EOL");
+            p += 1;  // skip '\n'
+        }
+
+        //C_CALL(munmap((void*)part.start, part.map_size));
+    }
+}
+
+
+
+FORCEINLINE const char* skip_one_orderkey_in_lineitem(const char* p)
+{
+    uint32_t first_orderkey = (uint32_t)-1;
+    while (true) {
+        const char* const saved_p = p;
+        uint32_t orderkey = 0;
+        while (*p != '|') {
+            ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+            orderkey = orderkey * 10 + (*p - '0');
+            ++p;
+        }
+        //++p;  // skip '|' (not necessary)
+        ASSERT(orderkey < g_upbound_orderkey, "Unexpected orderkey (too large): %u", orderkey);
+
+        if (first_orderkey == (uint32_t)-1) {
+            first_orderkey = orderkey;
+        }
+        else {
+            ASSERT(orderkey >= first_orderkey, "lineitem not sorted? orderkey=%u, first_orderkey=%u", orderkey, first_orderkey);
+            if (orderkey > first_orderkey) return saved_p;
+        }
+
+        while (*p != '\n') ++p;
+        ++p;  // skip '\n'
+    }
+}
+
+
+void worker_load_lineitem_multi_part(const uint32_t tid)
+{
+    mapped_file_part_t part;
+    while (g_mapped_lineitem_queue.pop(part)) {
+        ASSERT(part.start != nullptr, "[%u] BUG: pop: part.start == nullptr", tid);
+        ASSERT(part.desired_end != nullptr, "[%u] BUG: pop: part.desired_end == nullptr", tid);
+
+        const char* p = part.start;
+        const char* end = part.desired_end;
+        DEBUG("[%u] load lineitem: (original) [%p, %p)", tid, p, end);
+        if (!part.is_first) {
+            while (*p != '\n') ++p;
+            ++p;
+
+            p = skip_one_orderkey_in_lineitem(p);
+        }
+        if (!part.is_last) {
+            while (*end != '\n') ++end;
+            ++end;
+
+            end = skip_one_orderkey_in_lineitem(end);
+        }
+
+        DEBUG("[%u] load lineitem: [%p, %p)", tid, p, end);
+
+        struct lineitem_t {
+            uint32_t expend_cent;
+            date_t shipdate;
+        };
+        lineitem_t curr_items[32];
+        uint32_t curr_item_count = 0;
+        uint32_t curr_orderkey = (uint32_t)-1;
+        date_t curr_orderdate;
+
+
+        const auto query_by_same_orderkey = [&]() {
+            if (LIKELY(curr_orderkey != (uint32_t)-1)) {
+                ASSERT(curr_item_count > 0, "BUG... curr_item_count is 0");
+
+                const uint8_t mktsegment = curr_orderdate.mktsegment();
+                for (query_t& query : g_queries_by_mktsegment[mktsegment]) {
+                    if (!(curr_orderdate < query.q_orderdate)) break;
+                    uint32_t total_expend_cent = 0;
+                    for (uint32_t i = 0; i < curr_item_count; ++i) {
+                        if (curr_items[i].shipdate > query.q_shipdate) {
+                            total_expend_cent += curr_items[i].expend_cent;
+                        }
+                    }
+
+                    std::vector<query_result_t>& results = query.results[tid];
+                    if (results.size() < query.q_limit) {
+                        results.emplace_back(total_expend_cent, curr_orderkey, curr_orderdate);
+                        if (results.size() == query.q_limit) {
+                            std::make_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                        }
+                    }
+                    else {
+                        if (UNLIKELY(total_expend_cent > results.begin()->total_expend_cent)) {
+                            std::pop_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                            *results.rbegin() = query_result_t(total_expend_cent, curr_orderkey, curr_orderdate);
+                            std::push_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                        }
+                    }
+                }
+            }
+        };
+
+        while (p < end) {
+            uint32_t orderkey = 0;
+            while (*p != '|') {
+                ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+                orderkey = orderkey * 10 + (*p - '0');
+                ++p;
+            }
+            ++p;  // skip '|'
+            ASSERT(orderkey < g_upbound_orderkey, "Unexpected orderkey (too large): %u", orderkey);
+
+            if (orderkey != curr_orderkey) {
+                query_by_same_orderkey();
+
+                curr_orderkey = orderkey;
+                curr_orderdate = g_orderkey_to_order[orderkey];
+                curr_item_count = 0;
+            }
+
+            uint32_t expend_cent = 0;
+            while (*p != '.') {
+                ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+                expend_cent = expend_cent * 10 + (*p - '0');
+                ++p;
+            }
+            ++p;  // skip '.'
+            while (*p != '|') {
+                ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+                expend_cent = expend_cent * 10 + (*p - '0');
+                ++p;
+            }
+            ++p;  // skip '|'
+            curr_items[curr_item_count].expend_cent = expend_cent;
+
+            date_t shipdate;
+            shipdate.parse(p, /*dummy*/0x00);
+            p += 10;  // skip 'yyyy-MM-dd'
+            curr_items[curr_item_count].shipdate = shipdate;
+
+            ASSERT(*p == '\n', "Expect EOL");
+            p += 1;  // skip '\n'
+            ++curr_item_count;
+        }
+        query_by_same_orderkey();
+
+        //C_CALL(munmap((void*)part.start, part.map_size));
+    }
+}
+
+
+void worker_final_synthesis(const uint32_t /*tid*/)
+{
+    const uint32_t query_idx = g_synthesis_query_count++;
+    if (query_idx >= g_query_count) return;
+
+    const uint32_t mktsegment = g_all_queries[query_idx].first;
+    const uint32_t bucket_index = g_all_queries[query_idx].second;
+    query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
+    auto& final_result = query.final_result;
+
+    for (uint32_t t = 0; t < g_workers_thread_count; ++t) {
+        for (const query_result_t& result : query.results[t]) {
+            if (final_result.size() < query.q_limit) {
+                final_result.emplace_back(result);
+                if (final_result.size() == query.q_limit) {
+                    std::make_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+                }
             }
             else {
-                while (*p != '\n') ++p;
-                ++p;  // skip '\n'
+                if (UNLIKELY(result > *final_result.begin())) {
+                    std::pop_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+                    *final_result.rbegin() = result;
+                    std::push_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+                }
             }
-            parts[t].iov_len = (uintptr_t)p - (uintptr_t)parts[t].iov_base + 1;
-            last_p = (void*)p;
-        }
-
-        for (size_t t = 0; t < g_thread_count; ++t) {
-            DEBUG("orders part_%u: base=%p, len=0x%lx", (unsigned)t, parts[t].iov_base, (uint64_t)parts[t].iov_len);
-        }
-
-        for (size_t t = 0; t < g_thread_count; ++t) {
-            std::thread(preload_memory_range, parts[t]).detach();
-            threads[t] = std::thread(
-                [&](const iovec part, const size_t thread_idx) {
-                    load_order_part(part, thread_idx);
-                },
-                parts[t], t);
-        }
-        for (size_t t = 0; t < g_thread_count; ++t) {
-            threads[t].join();
         }
     }
+
+    std::sort(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+}
+
+
+
+void fn_worker_thread(const uint32_t tid)
+{
+    DEBUG("[%u] worker started", tid);
+
+    //g_workers_barrier_external.sync();  // sync.ext@0
+    {
+        timer tmr;
+        DEBUG("[%u] worker_load_customer(): starts", tid);
+        worker_load_customer_multi_part(tid);
+        DEBUG("[%u] worker_load_customer(): %.3lf msec", tid, tmr.elapsed_msec());
+    }
+
+    g_workers_barrier.sync();  // sync
+    {
+        timer tmr;
+        DEBUG("[%u] worker_load_orders(): starts", tid);
+        worker_load_orders_multi_part(tid);
+        DEBUG("[%u] worker_load_orders(): %.3lf msec", tid, tmr.elapsed_msec());
+    }
+
+    g_workers_barrier.sync();  // sync
+    {
+        timer tmr;
+        DEBUG("[%u] worker_load_lineitem(): starts", tid);
+        worker_load_lineitem_multi_part(tid);
+        DEBUG("[%u] worker_load_lineitem(): %.3lf msec", tid, tmr.elapsed_msec());
+    }
+
+    g_workers_barrier.sync();  // sync
+    {
+        timer tmr;
+        DEBUG("[%u] worker final synthesis: starts", tid);
+        worker_final_synthesis(tid);
+        DEBUG("[%u] worker final synthesis: %.3lf msec", tid, tmr.elapsed_msec());
+    }
+
+    DEBUG("[%u] worker done", tid);
+}
+
+
+
+static std::atomic_bool __orders_allocated { false };
+static std::atomic_uint64_t __customer_offset { 0 };
+static std::atomic_uint64_t __orders_offset { 0 };
+static std::atomic_uint64_t __lineitem_offset { 0 };
+
+#if !defined(MAP_UNINITIALIZED)
+#define MAP_UNINITIALIZED 0x4000000
+#endif
+
+
+void fn_loader_thread(const uint32_t tid)
+{
+    DEBUG("[%u] loader started", tid);
+
+    constexpr uint64_t customer_step_size = 1048576 * 4;
+    constexpr uint64_t orders_step_size = 1048576 * 16;
+    constexpr uint64_t lineitem_step_size = 1048576 * 16;
+
+    if (tid == 0) {
+        // Open files
+        open_file(g_customer_filepath, &g_customer_filesize, &g_customer_fd);
+        open_file(g_orders_filepath, &g_orders_filesize, &g_orders_fd);
+        open_file(g_lineitem_filepath, &g_lineitem_filesize, &g_lineitem_fd);
+
+        // Table customer queue init
+        g_mapped_customer_queue.init(g_customer_filesize / customer_step_size + 1);
+
+        // Table orders queue init
+        g_mapped_orders_queue.init(g_orders_filesize / orders_step_size + 1);
+
+        // Table lineitem queue init
+        g_mapped_lineitem_queue.init(g_lineitem_filesize / lineitem_step_size + 1);
+
+        // Allocate memory for table customer
+        g_upbound_custkey = g_customer_filesize / 15;  // TODO: estimated max customer key
+        g_custkey_to_mktsegment = (uint8_t*)mmap(
+            nullptr,
+            g_upbound_custkey * sizeof(uint8_t),
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE | MAP_UNINITIALIZED,
+            -1,
+            0);
+        ASSERT(g_custkey_to_mktsegment != MAP_FAILED, "g_custkey_to_mktsegment mmap() failed");
+        DEBUG("g_custkey_to_mktsegment: %p", g_custkey_to_mktsegment);
+        //preload_memory_range(g_custkey_to_mktsegment, g_upbound_custkey * sizeof(uint8_t));
+
+        //g_workers_barrier_external.sync();  // sync.ext@0
+    }
+    g_loaders_barrier.sync();
+
+    open_file_mapping_multi_part(
+        g_customer_filepath,
+        tid,
+        __customer_offset,
+        g_customer_fd,
+        g_customer_filesize,
+        customer_step_size,
+        g_mapped_customer_queue);
+
+    // Allocate memory for table orders
+    bool expected = false;
+    if (__orders_allocated.compare_exchange_strong(expected, true)) {
+        g_upbound_orderkey = g_lineitem_filesize / 20;  // TODO: estimated max order key by lineitem file
+        const uint64_t alloc_size = g_upbound_orderkey * sizeof(date_t);
+        DEBUG("[%u] allocating g_upbound_orderkey... (size: %" PRIu64 ")", tid, alloc_size);
+
+        g_orderkey_to_order = (date_t*)mmap(
+            nullptr,
+            alloc_size,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,  // MAP_UNINITIALIZED must NOT be specified
+            -1,
+            0);
+        ASSERT(g_orderkey_to_order != MAP_FAILED, "g_orderkey_to_order mmap() failed");
+
+        //g_orderkey_to_order = (date_t*)aligned_alloc(1024 * 1024 * 2, alloc_size);
+        //ASSERT(g_orderkey_to_order != nullptr, "g_orderkey_to_order aligned_alloc() failed");
+        //C_CALL(madvise(
+        //    g_orderkey_to_order,
+        //    alloc_size,
+        //    MADV_HUGEPAGE | MADV_SEQUENTIAL | MADV_WILLNEED));
+        //preload_memory_range/*_2M*/(g_orderkey_to_order, alloc_size);
+
+        DEBUG("[%u] allocated g_orderkey_to_order: %p", tid, g_orderkey_to_order);
+    }
+
+    g_loaders_barrier.sync();
+    if (tid == 0) {
+        g_mapped_customer_queue.mark_finish_push();
+    }
+
+    open_file_mapping_multi_part(
+        g_orders_filepath,
+        tid,
+        __orders_offset,
+        g_orders_fd,
+        g_orders_filesize,
+        orders_step_size,
+        g_mapped_orders_queue);
+    g_loaders_barrier.sync();
+    if (tid == 0) {
+        g_mapped_orders_queue.mark_finish_push();
+    }
+
+    open_file_mapping_multi_part(
+        g_lineitem_filepath,
+        tid,
+        __lineitem_offset,
+        g_lineitem_fd,
+        g_lineitem_filesize,
+        lineitem_step_size,
+        g_mapped_lineitem_queue);
+    g_loaders_barrier.sync();
+    if (tid == 0) {
+        g_mapped_lineitem_queue.mark_finish_push();
+    }
+
+    DEBUG("[%u] loader done", tid);
+}
+
+
+int main(int argc, char* argv[])
+{
+    //C_CALL(mlockall(MCL_FUTURE));
+
+    //
+    // Initializations
+    //
+    g_customer_filepath = argv[1];
+    g_orders_filepath = argv[2];
+    g_lineitem_filepath = argv[3];
+
+    g_workers_thread_count = std::thread::hardware_concurrency();
+    if (g_workers_thread_count > MAX_WORKER_THREADS) g_workers_thread_count = MAX_WORKER_THREADS;
+    INFO("g_workers_thread_count: %u", g_workers_thread_count);
+
+    g_workers_barrier.init(g_workers_thread_count);
+    g_workers_barrier_external.init(g_workers_thread_count + 1);
+
+    g_loaders_thread_count = std::thread::hardware_concurrency();
+    if (g_loaders_thread_count > MAX_LOADER_THREADS) g_loaders_thread_count = MAX_LOADER_THREADS;
+    INFO("g_loaders_thread_count: %u", g_loaders_thread_count);
+
+    g_loaders_barrier.init(g_loaders_thread_count);
+
+
+    //
+    // Load queries
+    //
+    {
+        [[maybe_unused]] timer tmr;
+        load_queries(argc, argv);
+        DEBUG("all query loaded (%.3lf msec)", tmr.elapsed_msec());
+    }
+
+
+    //
+    // Create loader threads
+    //
+    for (uint32_t tid = 0; tid < g_loaders_thread_count; ++tid) {
+        g_loaders.emplace_back(fn_loader_thread, tid);
+        //g_loaders.rbegin()->detach();
+    }
+
+    //
+    // Create worker threads
+    //
+    for (uint32_t tid = 0; tid < g_workers_thread_count; ++tid) {
+        g_workers.emplace_back(fn_worker_thread, tid);
+    }
+
+
+    //
+    // Wait for all loader and worker threads
+    //
+    for (std::thread& thr : g_loaders) thr.join();
+    INFO("all %u loaders done", g_workers_thread_count);
+
+    for (std::thread& thr : g_workers) thr.join();
+    INFO("all %u workers done", g_workers_thread_count);
 
 
     //
     // Print results
     //
-    INFO("finally, print results...");
-    std::vector<result_t> results;
-
-    for (auto& query : g_all_queries) {
-        std::priority_queue<result_t, std::vector<result_t>, std::greater<result_t>> final_top_n;
-        for (size_t t = 0; t < g_thread_count; ++t) {
-            while (!query.top_n[t].empty()) {
-                bool do_insert = false;
-                if (final_top_n.size() < query.limit_count) {
-                    do_insert = true;
-                }
-                else {  // final_top_n.size() >= query.limit_count
-                    if (final_top_n.top().total_expend_cent < query.top_n[t].top().total_expend_cent) {
-                        final_top_n.pop();
-                        do_insert = true;
-                    }
-                }
-                if (do_insert) {
-                    final_top_n.emplace(query.top_n[t].top());
-                }
-                query.top_n[t].pop();
-            }
-        }
-
-        results.clear();
-        while (!final_top_n.empty()) {
-            results.emplace_back(final_top_n.top());
-            final_top_n.pop();
-        }
+    for (uint32_t query_idx = 0; query_idx < g_query_count; ++query_idx) {
+        const uint32_t mktsegment = g_all_queries[query_idx].first;
+        const uint32_t bucket_index = g_all_queries[query_idx].second;
+        query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
 
         fprintf(stdout, "l_orderkey|o_orderdate|revenue\n");
-        for (size_t idx = results.size() - 1; idx != (size_t)-1; --idx) {
-            const result_t* it = &results[idx];
-            fprintf(stdout, "%u|%u-%02u-%02u|%u.%02u\n",
-                it->order_key, it->order_date.year, it->order_date.month, it->order_date.day,
-                it->total_expend_cent / 100, it->total_expend_cent % 100);
+        for (const query_result_t& result : query.final_result) {
+            fprintf(stdout, "%u|%04u-%02u-%02u|%u.%02u\n",
+                result.orderkey,
+                result.orderdate.year(), result.orderdate.month(), result.orderdate.day(),
+                result.total_expend_cent / 100, result.total_expend_cent % 100);
         }
     }
     fflush(stdout);
 
-    INFO("all done!");
-    thr.join();  // TODO: remove this
     return 0;
 }
