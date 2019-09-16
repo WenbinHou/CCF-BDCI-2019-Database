@@ -1,16 +1,18 @@
 CXX         = g++
-CXXFLAGS    = -O3 -pthread -Wall -std=gnu++14 -static-libstdc++ -static-libgcc -g
-DEPS        = common.h
-COBJ        = main.o
+CXXFLAGS    = -O3 -pthread -Wall -std=gnu++14 -static-libstdc++ -static-libgcc
+OBJS        = main.o
 TARGET      = BDCI19.out
 
-${TARGET}: $(COBJ)
+${TARGET}: $(OBJS)
 	$(CXX) -o $@ $^ $(CXXFLAGS)
 
-%.o: %.cpp $(DEPS)
-	$(CXX) -c $< $(CXXFLAGS)
+%.o: %.cpp common.h
+	$(CXX) -c $< -g $(CXXFLAGS)
+
+.PHONY: fastest
+fastest: main.cpp common.h
+	$(CXX) -o ${TARGET} main.cpp common.h -DMAKE_FASTEST=1 $(CXXFLAGS)
 
 .PHONY: clean
-
-clean :
+clean:
 	rm *.o $(TARGET)

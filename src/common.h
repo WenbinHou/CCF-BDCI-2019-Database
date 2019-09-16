@@ -34,7 +34,9 @@
 //==============================================================
 // Compilation flags
 //==============================================================
+#if !defined(MAKE_FASTEST)
 #define MAKE_FASTEST            0
+#endif
 
 #if !MAKE_FASTEST
 #define ENABLE_PROFILING        1
