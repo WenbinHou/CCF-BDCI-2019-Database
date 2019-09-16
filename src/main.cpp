@@ -82,7 +82,9 @@ void load_queries(
             g_queries_by_mktsegment[mktsegment].begin(),
             g_queries_by_mktsegment[mktsegment].end(),
             [](const query_t& a, const query_t& b) noexcept {
-                return a.q_orderdate > b.q_orderdate;
+                if (a.q_orderdate > b.q_orderdate) return true;
+                if (a.q_orderdate < b.q_orderdate) return false;
+                return (a.query_index < b.query_index);
             });
 
         TRACE("------------------------------------------------");
@@ -488,33 +490,35 @@ void worker_load_lineitem_multi_part(const uint32_t tid)
 
 void worker_final_synthesis(const uint32_t /*tid*/)
 {
-    const uint32_t query_idx = g_synthesis_query_count++;
-    if (query_idx >= g_query_count) return;
+    while (true) {
+        const uint32_t query_idx = g_synthesis_query_count++;
+        if (query_idx >= g_query_count) return;
 
-    const uint32_t mktsegment = g_all_queries[query_idx].first;
-    const uint32_t bucket_index = g_all_queries[query_idx].second;
-    query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
-    auto& final_result = query.final_result;
+        const uint32_t mktsegment = g_all_queries[query_idx].first;
+        const uint32_t bucket_index = g_all_queries[query_idx].second;
+        query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
+        auto& final_result = query.final_result;
 
-    for (uint32_t t = 0; t < g_workers_thread_count; ++t) {
-        for (const query_result_t& result : query.results[t]) {
-            if (final_result.size() < query.q_limit) {
-                final_result.emplace_back(result);
-                if (final_result.size() == query.q_limit) {
-                    std::make_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+        for (uint32_t t = 0; t < g_workers_thread_count; ++t) {
+            for (const query_result_t& result : query.results[t]) {
+                if (final_result.size() < query.q_limit) {
+                    final_result.emplace_back(result);
+                    if (final_result.size() == query.q_limit) {
+                        std::make_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+                    }
                 }
-            }
-            else {
-                if (UNLIKELY(result > *final_result.begin())) {
-                    std::pop_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
-                    *final_result.rbegin() = result;
-                    std::push_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+                else {
+                    if (UNLIKELY(result > *final_result.begin())) {
+                        std::pop_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+                        *final_result.rbegin() = result;
+                        std::push_heap(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+                    }
                 }
             }
         }
-    }
 
-    std::sort(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+        std::sort(final_result.begin(), final_result.end(), std::greater<query_result_t>());
+    }
 }
 
 
@@ -750,6 +754,7 @@ int main(int argc, char* argv[])
         const uint32_t bucket_index = g_all_queries[query_idx].second;
         query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
 
+        TRACE("printing query#%u: mktsegment=%u", query.query_index, query.q_mktsegment);
         fprintf(stdout, "l_orderkey|o_orderdate|revenue\n");
         for (const query_result_t& result : query.final_result) {
             fprintf(stdout, "%u|%04u-%02u-%02u|%u.%02u\n",
