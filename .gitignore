@@ -8,6 +8,11 @@ obj/
 *.o
 *.out
 
+# Intel C/C++ compiler PGO files
+*.dyn
+*.dpi
+*.dpi.lock
+
 # Data files
 /data/*.txt
 
