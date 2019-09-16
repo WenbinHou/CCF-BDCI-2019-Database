@@ -421,18 +421,20 @@ void worker_load_lineitem_multi_part(const uint32_t tid)
                         }
                     }
 
-                    std::vector<query_result_t>& results = query.results[tid];
-                    if (results.size() < query.q_limit) {
-                        results.emplace_back(total_expend_cent, curr_orderkey, curr_orderdate);
-                        if (results.size() == query.q_limit) {
-                            std::make_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                    if (total_expend_cent > 0) {  // TODO: suppose no order will have price = 0.00
+                        std::vector<query_result_t>& results = query.results[tid];
+                        if (results.size() < query.q_limit) {
+                            results.emplace_back(total_expend_cent, curr_orderkey, curr_orderdate);
+                            if (results.size() == query.q_limit) {
+                                std::make_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                            }
                         }
-                    }
-                    else {
-                        if (UNLIKELY(total_expend_cent > results.begin()->total_expend_cent)) {
-                            std::pop_heap(results.begin(), results.end(), std::greater<query_result_t>());
-                            *results.rbegin() = query_result_t(total_expend_cent, curr_orderkey, curr_orderdate);
-                            std::push_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                        else {
+                            if (UNLIKELY(total_expend_cent > results.begin()->total_expend_cent)) {
+                                std::pop_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                                *results.rbegin() = query_result_t(total_expend_cent, curr_orderkey, curr_orderdate);
+                                std::push_heap(results.begin(), results.end(), std::greater<query_result_t>());
+                            }
                         }
                     }
                 }
