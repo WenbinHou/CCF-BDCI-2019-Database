@@ -4,7 +4,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-time ../src/BDCI19.out \
+time taskset -c 0-15 ../src/BDCI19.out \
     ../data/customer.txt ../data/orders.txt ../data/lineitem.txt \
     6 \
     BUILDING 1995-03-29 1995-03-27 5 \
