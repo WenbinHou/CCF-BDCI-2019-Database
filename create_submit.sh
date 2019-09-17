@@ -28,11 +28,11 @@ chmod +x run.sh
 echo '#!/bin/bash -e' >compile.sh
 echo 'cd "$(dirname "$0")"' >>compile.sh
 echo 'make fastest -j -C sourcecode' >>compile.sh
+echo 'mv sourcecode/BDCI19.out ./' >>compile.sh
 chmod +x compile.sh
 
 # Compile and copy binary file
 ./compile.sh
-mv sourcecode/BDCI19.out .
 
 
 # Create zip file
