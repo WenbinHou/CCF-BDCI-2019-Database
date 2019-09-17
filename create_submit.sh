@@ -27,7 +27,7 @@ chmod +x run.sh
 # Generate compile.sh
 echo '#!/bin/bash -e' >compile.sh
 echo 'cd "$(dirname "$0")"' >>compile.sh
-echo 'make -j -C sourcecode' >>compile.sh
+echo 'make fastest -j -C sourcecode' >>compile.sh
 chmod +x compile.sh
 
 # Compile and copy binary file
