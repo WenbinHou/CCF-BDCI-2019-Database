@@ -155,17 +155,19 @@ struct c_string_less
     bool operator()(char const* const a, char const* const b) const noexcept { return strcmp(a, b) < 0; }
 };
 
+#if ENABLE_4_BYTE_DATE
+
 struct date_t
 {
     FORCEINLINE void parse(const char* const str, const uint8_t mktsegment) noexcept
     {
         // NOTE: for query's orderdate, mktsegment should be 0x00
         //       because we require o_orderdate < q_orderdate 
-        // NOTE: for query's shipdate, mktsegment should be 0xff
+        // NOTE: for query's shipdate, mktsegment should be MAX_MKTSEGMENT
         //       because we require o_shipdate > q_shipdate 
 
         // `str` looks like "yyyy-MM-dd"
-        //ASSERT(str[10] == '\n' || str[10] == '\0', "Unexpected char in date_t: (0x%02x) '%c'", str[10], str[10]);
+        ASSERT(str[10] == '\n' || str[10] == '|' || str[10] == '\0', "Unexpected char in date_t: (0x%02x) '%c'", str[10], str[10]);
         _value =
             ((str[0] - '0') * 1000 + (str[1] - '0') * 100 + (str[2] - '0') * 10 + (str[3] - '0')) << 18 |
             ((str[5] - '0') * 10 + (str[6] - '0')) << 14 |
@@ -189,6 +191,8 @@ struct date_t
     FORCEINLINE bool operator ==(const date_t& date) const noexcept { return (_value == date._value); }
     FORCEINLINE bool operator !=(const date_t& date) const noexcept { return (_value != date._value); }
 
+public:
+    static constexpr const uint8_t MAX_MKTSEGMENT = 0b11111111;
 
 private:
     // (14 bits) 18-31: year
@@ -200,6 +204,59 @@ private:
     uint32_t _value;
 };
 static_assert(sizeof(date_t) == 4, "date_t should be 4 bytes");
+
+#else
+
+struct date_t
+{
+    FORCEINLINE void parse(const char* const str, const uint8_t mktsegment) noexcept
+    {
+        // NOTE: for query's orderdate, mktsegment should be 0x00
+        //       because we require o_orderdate < q_orderdate 
+        // NOTE: for query's shipdate, mktsegment should be MAX_MKTSEGMENT
+        //       because we require o_shipdate > q_shipdate 
+
+        // `str` looks like "yyyy-MM-dd"
+        ASSERT(str[10] == '\n' || str[10] == '|' || str[10] == '\0', "Unexpected char in date_t: (0x%02x) '%c'", str[10], str[10]);
+        _value = (uint16_t)(
+            ((str[0] - '0') * 1000 + (str[1] - '0') * 100 + (str[2] - '0') * 10 + (str[3] - '0') - 1987) << 12 |
+            ((str[5] - '0') * 10 + (str[6] - '0')) << 8 |
+            ((str[8] - '0') * 10 + (str[9] - '0')) << 3 |
+            mktsegment);
+    }
+
+    FORCEINLINE uint32_t year() const noexcept { return (_value >> 12) + 1987; }
+
+    FORCEINLINE uint32_t month() const noexcept { return (_value >> 8) & 0b1111; }
+
+    FORCEINLINE uint32_t day() const noexcept { return (_value >> 3) & 0b11111; }
+
+    FORCEINLINE uint8_t mktsegment() const noexcept { return (uint8_t)(_value & 0b111); }
+
+    // NOTE: we don't compare mktsegment here! (see `parse()` function)
+    FORCEINLINE bool operator < (const date_t& date) const noexcept { return (_value <  date._value); }
+    FORCEINLINE bool operator <=(const date_t& date) const noexcept { return (_value <= date._value); }
+    FORCEINLINE bool operator > (const date_t& date) const noexcept { return (_value >  date._value); }
+    FORCEINLINE bool operator >=(const date_t& date) const noexcept { return (_value >= date._value); }
+    FORCEINLINE bool operator ==(const date_t& date) const noexcept { return (_value == date._value); }
+    FORCEINLINE bool operator !=(const date_t& date) const noexcept { return (_value != date._value); }
+
+public:
+    static constexpr const uint8_t MAX_MKTSEGMENT = 0b111;
+
+private:
+    //  (4 bits) 12-15: year-1990
+    //  (4 bits)  8-11: month
+    //  (5 bits)  3-7:  day
+    //  (3 bits)  0-2:  mktsegment
+
+    // ReSharper disable once CppUninitializedNonStaticDataMember
+    uint16_t _value;
+};
+static_assert(sizeof(date_t) == 2, "date_t should be 2 bytes");
+
+#endif
+
 
 
 template<typename T>

@@ -66,7 +66,7 @@ void load_queries(
 
         query.q_mktsegment = mktsegment;
         query.q_orderdate.parse(argv[5 + query_idx * 4 + 1], 0x00);
-        query.q_shipdate.parse(argv[5 + query_idx * 4 + 2], 0xff);
+        query.q_shipdate.parse(argv[5 + query_idx * 4 + 2], date_t::MAX_MKTSEGMENT);
         query.q_limit = (uint32_t)strtol(argv[5 + query_idx * 4 + 3], nullptr, 10);
 
         TRACE("query#%u: q_mktsegment=%u, q_orderdate=%04u-%02u-%02u, q_shipdate=%04u-%02u-%02u, q_limit=%u",

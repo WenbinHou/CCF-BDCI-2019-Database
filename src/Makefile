@@ -1,5 +1,5 @@
 CXX         = g++
-CXXFLAGS    = -O3 -pthread -Wall -std=gnu++14 -static-libstdc++ -static-libgcc
+CXXFLAGS    = -O3 -pthread -Wall -std=gnu++14 -static-libstdc++ -static-libgcc -DENABLE_4_BYTE_DATE=0
 OBJS        = main.o
 TARGET      = BDCI19.out
 
