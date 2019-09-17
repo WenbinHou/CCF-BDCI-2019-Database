@@ -27,7 +27,7 @@ threads_barrier_t g_loaders_barrier;
 int g_customer_fd, g_orders_fd, g_lineitem_fd;
 uint64_t g_customer_filesize, g_orders_filesize, g_lineitem_filesize;
 const char *g_customer_filepath, *g_orders_filepath, *g_lineitem_filepath;
-mpmc_queue_t<mapped_file_part_t> g_mapped_customer_queue, g_mapped_orders_queue, g_mapped_lineitem_queue;
+mpmc_queue_t<mapped_file_part_t> g_mapped_customer_queue, g_mapped_orders_queue, g_mapped_lineitem_queue, g_mapping_parts_queue;
 
 uint64_t g_upbound_custkey;
 uint8_t* g_custkey_to_mktsegment;
@@ -90,12 +90,17 @@ void load_queries(
         TRACE("------------------------------------------------");
         TRACE("total queries on mktsegment#%u: %" PRIu64, mktsegment, (uint64_t)g_queries_by_mktsegment[mktsegment].size());
         for (size_t bucket_index = 0; bucket_index < g_queries_by_mktsegment[mktsegment].size(); ++bucket_index) {
-            const query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
+            query_t& query = g_queries_by_mktsegment[mktsegment][bucket_index];
             TRACE("    query#%u: q_mktsegment=%u, q_orderdate=%04u-%02u-%02u, q_shipdate=%04u-%02u-%02u, q_limit=%u",
                 query.query_index, query.q_mktsegment,
                 query.q_orderdate.year(), query.q_orderdate.month(), query.q_orderdate.day(),
                 query.q_shipdate.year(), query.q_shipdate.month(), query.q_shipdate.day(),
                 query.q_limit);
+
+            // TODO: Reserve for results?
+            //for (uint32_t t = 0; t < MAX_WORKER_THREADS; ++t) {
+            //    query.results[t].reserve(query.q_limit);
+            //}
 
             // Fill g_all_queries
             g_all_queries[query.query_index] = std::make_pair((uint32_t)mktsegment, (uint32_t)bucket_index);
@@ -291,7 +296,8 @@ void worker_load_customer_multi_part(const uint32_t tid)
             //last_custkey = custkey;
         }
 
-        //C_CALL(munmap((void*)part.start, part.map_size));
+        C_CALL(munmap((void*)part.start, part.map_size));
+        //g_mapping_parts_queue.push(part);
     }
 }
 
@@ -312,6 +318,7 @@ void worker_load_orders_multi_part(const uint32_t tid)
             ++end;
         }
 
+        DEBUG("[%u] load orders: [%p, %p)", tid, p, end);
         while (p < end) {
             uint32_t orderkey = 0;
             while (*p != '|') {
@@ -338,7 +345,8 @@ void worker_load_orders_multi_part(const uint32_t tid)
             p += 1;  // skip '\n'
         }
 
-        //C_CALL(munmap((void*)part.start, part.map_size));
+        C_CALL(munmap((void*)part.start, part.map_size));
+        //g_mapping_parts_queue.push(part);
     }
 }
 
@@ -381,7 +389,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid)
 
         const char* p = part.start;
         const char* end = part.desired_end;
-        DEBUG("[%u] load lineitem: (original) [%p, %p)", tid, p, end);
+        //DEBUG("[%u] load lineitem: (original) [%p, %p)", tid, p, end);
         if (!part.is_first) {
             while (*p != '\n') ++p;
             ++p;
@@ -415,13 +423,15 @@ void worker_load_lineitem_multi_part(const uint32_t tid)
                 for (query_t& query : g_queries_by_mktsegment[mktsegment]) {
                     if (!(curr_orderdate < query.q_orderdate)) break;
                     uint32_t total_expend_cent = 0;
+                    bool matched = false;
                     for (uint32_t i = 0; i < curr_item_count; ++i) {
                         if (curr_items[i].shipdate > query.q_shipdate) {
                             total_expend_cent += curr_items[i].expend_cent;
+                            matched = true;
                         }
                     }
 
-                    if (total_expend_cent > 0) {  // TODO: suppose no order will have price = 0.00
+                    if (matched) {
                         std::vector<query_result_t>& results = query.results[tid];
                         if (results.size() < query.q_limit) {
                             results.emplace_back(total_expend_cent, curr_orderkey, curr_orderdate);
@@ -485,7 +495,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid)
         }
         query_by_same_orderkey();
 
-        //C_CALL(munmap((void*)part.start, part.map_size));
+        C_CALL(munmap((void*)part.start, part.map_size));
+        //g_mapping_parts_queue.push(part);
     }
 }
 
@@ -546,6 +557,11 @@ void fn_worker_thread(const uint32_t tid)
     }
 
     g_workers_barrier.sync();  // sync
+    //if (tid == 0) {
+    //    DEBUG("1111111111111111");
+    //    C_CALL(munmap(g_custkey_to_mktsegment, g_upbound_custkey * sizeof(uint8_t)));
+    //    DEBUG("2222222222222222");
+    //}
     {
         timer tmr;
         DEBUG("[%u] worker_load_lineitem(): starts", tid);
@@ -580,9 +596,9 @@ void fn_loader_thread(const uint32_t tid)
 {
     DEBUG("[%u] loader started", tid);
 
-    constexpr uint64_t customer_step_size = 1048576 * 4;
-    constexpr uint64_t orders_step_size = 1048576 * 16;
-    constexpr uint64_t lineitem_step_size = 1048576 * 16;
+    constexpr uint64_t customer_step_size = 1048576 * 4 - 4096;
+    constexpr uint64_t orders_step_size = 1048576 * 16 - 4096;
+    constexpr uint64_t lineitem_step_size = 1048576 * 16 - 4096;
 
     if (tid == 0) {
         // Open files
@@ -599,18 +615,36 @@ void fn_loader_thread(const uint32_t tid)
         // Table lineitem queue init
         g_mapped_lineitem_queue.init(g_lineitem_filesize / lineitem_step_size + 1);
 
+        // Create a separate thread for munmap "part"s
+        /*
+        g_mapping_parts_queue.init(g_customer_filesize / customer_step_size + g_orders_filesize / orders_step_size + g_lineitem_filesize / lineitem_step_size + 3);
+        std::thread([&]() {
+            mapped_file_part_t part;
+            while (g_mapping_parts_queue.pop(part)) {
+                DEBUG("munmap %p", part.start);
+                C_CALL(munmap((void*)part.start, part.map_size));
+                DEBUG("munmap %p done", part.start);
+            }
+        }).detach();  // TODO: not elegent
+        */
+
         // Allocate memory for table customer
         g_upbound_custkey = g_customer_filesize / 15;  // TODO: estimated max customer key
         g_custkey_to_mktsegment = (uint8_t*)mmap(
             nullptr,
             g_upbound_custkey * sizeof(uint8_t),
             PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE | MAP_UNINITIALIZED,
+            MAP_PRIVATE | MAP_ANONYMOUS /*| MAP_POPULATE*/ | MAP_UNINITIALIZED,
             -1,
             0);
         ASSERT(g_custkey_to_mktsegment != MAP_FAILED, "g_custkey_to_mktsegment mmap() failed");
         DEBUG("g_custkey_to_mktsegment: %p", g_custkey_to_mktsegment);
         //preload_memory_range(g_custkey_to_mktsegment, g_upbound_custkey * sizeof(uint8_t));
+
+        C_CALL(madvise(
+            g_custkey_to_mktsegment,
+            g_upbound_custkey * sizeof(uint8_t),
+            MADV_HUGEPAGE | MADV_SEQUENTIAL | MADV_WILLNEED));
 
         //g_workers_barrier_external.sync();  // sync.ext@0
     }
@@ -636,17 +670,20 @@ void fn_loader_thread(const uint32_t tid)
             nullptr,
             alloc_size,
             PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,  // MAP_UNINITIALIZED must NOT be specified
+            MAP_PRIVATE | MAP_ANONYMOUS, // | MAP_POPULATE,  // MAP_UNINITIALIZED must NOT be specified
             -1,
             0);
         ASSERT(g_orderkey_to_order != MAP_FAILED, "g_orderkey_to_order mmap() failed");
 
+        //g_orderkey_to_order = (date_t*)malloc(alloc_size);
+        //ASSERT(g_orderkey_to_order != nullptr, "g_orderkey_to_order mmap() failed");
+
         //g_orderkey_to_order = (date_t*)aligned_alloc(1024 * 1024 * 2, alloc_size);
         //ASSERT(g_orderkey_to_order != nullptr, "g_orderkey_to_order aligned_alloc() failed");
-        //C_CALL(madvise(
-        //    g_orderkey_to_order,
-        //    alloc_size,
-        //    MADV_HUGEPAGE | MADV_SEQUENTIAL | MADV_WILLNEED));
+        C_CALL(madvise(
+            g_orderkey_to_order,
+            alloc_size,
+            MADV_HUGEPAGE | MADV_SEQUENTIAL | MADV_WILLNEED));
         //preload_memory_range/*_2M*/(g_orderkey_to_order, alloc_size);
 
         DEBUG("[%u] allocated g_orderkey_to_order: %p", tid, g_orderkey_to_order);
@@ -767,5 +804,6 @@ int main(int argc, char* argv[])
     }
     fflush(stdout);
 
+    DEBUG("now exit!");
     return 0;
 }
