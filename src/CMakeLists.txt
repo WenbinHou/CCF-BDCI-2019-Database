@@ -23,4 +23,4 @@ link_libraries(
     -static-libgcc -static-libstdc++)
 
 add_executable(BDCI19
-    src/main.cpp src/create_index.cpp #[[src/use_index.cpp]] src/naive_use_index.cpp)
+    main.cpp create_index.cpp #[[use_index.cpp]] naive_use_index.cpp)

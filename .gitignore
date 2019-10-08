@@ -21,9 +21,6 @@ obj/
 /submit/
 /submit.zip
 /submit.tar.gz
-/compile.sh
-/readme.txt
-/run.sh
 
 # CMake/CLion files
 /.idea/
