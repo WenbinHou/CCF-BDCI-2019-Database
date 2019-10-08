@@ -10,7 +10,7 @@ mkdir -p build
 cd build
 rm -rf *
 
-cmake ../src -DCMAKE_BUILD_TYPE=Release -DMAKE_FASTEST=ON
+cmake ../sourcecode -DCMAKE_BUILD_TYPE=Release -DMAKE_FASTEST=ON
 
 make -j
 
