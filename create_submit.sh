@@ -12,8 +12,9 @@ cd submit
 
 
 # Copy source code
-cp -a ../src sourcecode
-rm -f sourcecode/*.o sourcecode/*.out
+cp -a ../src ./src
+cp -a ../CMakeLists.txt ./
+rm -f src/*.o src/*.out
 
 # Copy README
 cp -a ../README.md readme.txt
@@ -21,14 +22,18 @@ cp -a ../README.md readme.txt
 # Generate run.sh
 echo '#!/bin/bash -e' >run.sh
 echo 'cd "$(dirname "$0")"' >>run.sh
-echo 'exec ./BDCI19.out "$@"' >>run.sh
+echo 'exec ./BDCI19 "$@"' >>run.sh
 chmod +x run.sh
 
 # Generate compile.sh
-echo '#!/bin/bash -e' >compile.sh
+echo '#!/bin/bash -ve' >compile.sh
 echo 'cd "$(dirname "$0")"' >>compile.sh
-echo 'make fastest -j -C sourcecode' >>compile.sh
-echo 'mv sourcecode/BDCI19.out ./' >>compile.sh
+echo 'rm -rf build; mkdir build' >>compile.sh
+echo 'cd build' >>compile.sh
+echo 'cmake .. -DCMAKE_BUILD_TYPE=Release -DMAKE_FASTEST=ON' >>compile.sh
+echo 'make -j' >>compile.sh
+echo 'mv BDCI19 ../' >>compile.sh
+echo 'cd ..; rm -rf build' >>compile.sh
 chmod +x compile.sh
 
 # Compile and copy binary file
@@ -36,7 +41,7 @@ chmod +x compile.sh
 
 
 # Create zip file
-tar -cf ../submit.zip *
+tar -cf ../submit.tar.gz *
 
 cd ..
 rm -rf submit
