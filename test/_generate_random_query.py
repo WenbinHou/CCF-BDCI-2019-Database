@@ -42,7 +42,7 @@ if __name__ == '__main__':
     fp.write('\n')
     fp.write('cd "$(dirname "$0")"\n')
     fp.write('\n')
-    fp.write('time taskset -c 0-15 ../src/BDCI19.out \\\n')
+    fp.write('time taskset -c 0-15 ../run.sh \\\n')
     fp.write('    ../data/customer.txt ../data/orders.txt ../data/lineitem.txt \\\n')
     fp.write('    %d \\\n' % query_count)
     for _ in range(query_count):
@@ -50,7 +50,7 @@ if __name__ == '__main__':
         orderdate = random_date("1990-01-01", "2000-01-01", rand)
         shipdate = random_date("1990-01-01", orderdate, rand)
         limit = rand.randint(100, 10000)  # at least top 100
-        fp.write("    %-10s %s %s %d\\\n" % (mktsegment, orderdate, shipdate, limit))
+        fp.write("    %-10s %s %s %d \\\n" % (mktsegment, orderdate, shipdate, limit))
 
     fp.write('    \\\n')
     fp.write('    >"$(basename "$0").stdout"\n')

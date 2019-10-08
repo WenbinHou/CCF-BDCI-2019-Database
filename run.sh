@@ -1,6 +1,4 @@
 #!/bin/bash
 
-cd "$(dirname "$0")"
-
-exec ./BDCI19 "$@"
+exec "$(dirname "$0")/BDCI19" "$@"
 
