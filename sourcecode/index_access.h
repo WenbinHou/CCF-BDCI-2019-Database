@@ -1,5 +1,0 @@
-#if !defined(_BDCI19_INDEX_ACCESS_H_INCLUDED_)
-#define _BDCI19_INDEX_ACCESS_H_INCLUDED_
-
-
-#endif  // !defined(_BDCI19_INDEX_ACCESS_H_INCLUDED_)
