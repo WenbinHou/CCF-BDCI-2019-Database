@@ -901,7 +901,7 @@ void worker_calc_pretopn_multi_part([[maybe_unused]] const uint32_t tid) noexcep
                     ASSERT(orderkey < (1 << 30), "orderkey Boom!");
 
                     if (desc.topn_count < CONFIG_EXPECT_MAX_TOPN) {
-                        desc.topn_values[desc.topn_count++] = (uint64_t)total_expend_cent << 36 | (uint64_t)(orderdate - from_orderdate) << 30 | orderkey;
+                        desc.topn_values[desc.topn_count++] = (uint64_t)total_expend_cent << 36 | (uint64_t)orderkey << 6 | (uint32_t)(orderdate - from_orderdate);
                         if (desc.topn_count == CONFIG_EXPECT_MAX_TOPN) {
                             std::make_heap(desc.topn_values, desc.topn_values + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
                         }
@@ -909,7 +909,7 @@ void worker_calc_pretopn_multi_part([[maybe_unused]] const uint32_t tid) noexcep
                     else {
                         if (UNLIKELY(total_expend_cent > (desc.topn_values[0] >> 36))) {
                             std::pop_heap(desc.topn_values, desc.topn_values + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
-                            desc.topn_values[CONFIG_EXPECT_MAX_TOPN - 1] = (uint64_t)total_expend_cent << 36 | (uint64_t)(orderdate - from_orderdate) << 30 | orderkey;
+                            desc.topn_values[CONFIG_EXPECT_MAX_TOPN - 1] = (uint64_t)total_expend_cent << 36 | (uint64_t)orderkey << 6 | (uint32_t)(orderdate - from_orderdate);
                             std::push_heap(desc.topn_values, desc.topn_values + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
                         }
                     }
@@ -937,8 +937,8 @@ void worker_calc_pretopn_multi_part([[maybe_unused]] const uint32_t tid) noexcep
 #if ENABLE_LOGGING_DEBUG
         const uint64_t value = desc.topn_values[0];
         const uint32_t expend_cent = value >> 36;
-        const date_t orderdate = from_orderdate + ((value >> 30) & 0b111111);
-        const uint32_t orderkey = value & ((1 << 30) - 1);
+        const uint32_t orderkey = (value >> 6) & ((1U << 30) - 1);
+        const date_t orderdate = from_orderdate + (value & 0b111111U);
         const auto tuple = date_get_ymd(orderdate);
         DEBUG("plate %u: N=%u, top=(orderkey=%u,orderdate=%u-%02u-%02u,expend_cent=%u)",
              plate_id, desc.topn_count, orderkey, std::get<0>(tuple), std::get<1>(tuple), std::get<2>(tuple), expend_cent);

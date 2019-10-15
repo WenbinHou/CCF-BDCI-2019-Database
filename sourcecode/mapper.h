@@ -16,7 +16,8 @@
 #define MMAP_ALIGNMENT_HUGETLB              (1048576U * 2)
 #define MMAP_ALIGNMENT                      (4096)
 
-#define MMAP_ALIGN_DOWN(_Ptr_, _Align_)     ((void*)((uintptr_t)(_Ptr_) & ~(uintptr_t)((_Align_) - 1)))
+// TODO: Move to common macros!
+#define MMAP_ALIGN_DOWN(_Ptr_, _Align_)     ((void*)((uintptr_t)(_Ptr_) / (uintptr_t)(_Align_) * (uintptr_t)(_Align_)))
 #define MMAP_ALIGN_UP(_Ptr_, _Align_)       ((void*)MMAP_ALIGN_DOWN((uintptr_t)(_Ptr_) + (_Align_) - 1, (_Align_)))
 
 

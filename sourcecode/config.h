@@ -65,16 +65,17 @@
 
 
 // Calculate top-N in advance every several days
-//  0 - Don't calculate top-N in advance
-#define CONFIG_TOPN_DATES_PER_PLATE         (0)
+//   0 - Don't calculate top-N in advance
+//  >0 - Calculate top-N every these days in advance
+#define CONFIG_TOPN_DATES_PER_PLATE         (8)
 static_assert(CONFIG_TOPN_DATES_PER_PLATE <= 64, "Max 6 bits for orderdate_diff in a plate");
 
 // Number of buffers when we load built indices when pre-calculating top-N
 // Generally, 2 * loader_thread_count is fine
 #define CONFIG_PRETOPN_BUFFER_COUNT         (32)
 
-#define CONFIG_PRETOPN_LOAD_INDEX_USE_PREAD 1
+#define CONFIG_PRETOPN_LOAD_INDEX_USE_PREAD 1  // Suggest to be 1
 
-#define CONFIG_EXPECT_MAX_TOPN              (10000)
+#define CONFIG_EXPECT_MAX_TOPN              (12000)  // According to problem description: 10000
 
 #endif  // !defined(_BDCI19_CONFIG_H_INCLUDED_)
