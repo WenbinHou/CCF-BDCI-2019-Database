@@ -1,0 +1,29 @@
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
+project(BDCI19
+    LANGUAGES C CXX)
+
+set(CMAKE_VERBOSE_MAKEFILE ON)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
+find_package(Threads REQUIRED)
+link_libraries(Threads::Threads)
+
+if (MAKE_FASTEST)
+    add_definitions(-DMAKE_FASTEST=1)
+endif()
+
+add_compile_options(
+    -flto -Ofast
+    -Wall -Wextra -Winline)
+
+link_libraries(
+    -flto -Ofast
+    -static-libgcc -static-libstdc++)
+
+add_executable(BDCI19
+    sourcecode/create_index.cpp
+    sourcecode/use_index.cpp
+    sourcecode/main.cpp)
