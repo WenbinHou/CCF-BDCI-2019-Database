@@ -278,7 +278,7 @@ void fn_worker_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
 
 
         // NOTE: very carefully deal with q_orderdate
-        if (LIKELY(!query.is_unknown_mktsegment && query.q_orderdate > MIN_TABLE_DATE)) {
+        if (LIKELY(!query.is_unknown_mktsegment && query.q_topn > 0 && query.q_orderdate > MIN_TABLE_DATE)) {
             const date_t scan_start_orderdate = std::max<date_t>(
                 query.q_shipdate - (g_meta.max_shipdate_orderdate_diff - 1),
                 MIN_TABLE_DATE);
