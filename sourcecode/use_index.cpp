@@ -22,6 +22,7 @@ struct query_t
 
     bool is_unknown_mktsegment;
     std::vector<query_result_t> result;
+    std::string output;
 };
 
 struct partial_index_t
@@ -168,8 +169,6 @@ void use_index_initialize() noexcept
 
             DEBUG("query #%u: q_mktid=%u,q_orderdate=%u,q_shipdate=%u,q_topn=%u",
                   q, query.q_mktid, query.q_orderdate, query.q_shipdate, query.q_topn);
-
-            query.result.reserve(query.q_topn);
         }
     }
 }
@@ -183,6 +182,8 @@ void fn_worker_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
         const uint32_t query_id = g_queries_curr++;
         if (query_id >= g_query_count) break;
         query_t &query = g_queries[query_id];
+
+        query.result.reserve(query.q_topn);
 
         const auto scan_orderdate = [&](const date_t orderdate) {
             const uint32_t bucket = calc_bucket_index(query.q_mktid, orderdate);
@@ -363,6 +364,48 @@ void fn_worker_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
 #endif  // CONFIG_TOPN_DATES_PER_PLATE > 0
         }
 
+        //
+        // print query to string
+        //
+        const auto append_u32 = [&](const uint32_t n) noexcept {
+            ASSERT(n > 0);
+            query.output += std::to_string(n);  // TODO: implement it!
+        };
+        const auto append_u32_width2 = [&](const uint32_t n) noexcept {
+            ASSERT(n <= 99);
+            query.output += (char)('0' + n / 10);
+            query.output += (char)('0' + n % 10);
+        };
+        const auto append_u32_width4 = [&](const uint32_t n) noexcept {
+            ASSERT(n <= 9999);
+            query.output += (char)('0' + (n       ) / 1000);
+            query.output += (char)('0' + (n % 1000) / 100);
+            query.output += (char)('0' + (n % 100 ) / 10);
+            query.output += (char)('0' + (n % 10 )  / 1);
+        };
+        std::sort(query.result.begin(), query.result.end(), std::greater<>());
+        query.output.reserve((size_t)(query.q_topn + 1) * 32);  // max line length: ~32
+        query.output += "l_orderkey|o_orderdate|revenue\n";
+        for (const query_result_t& line : query.result) {
+            //printf("%u|%u-%02u-%02u|%u.%02u\n",
+            //       line.orderkey,
+            //       std::get<0>(ymd), std::get<1>(ymd), std::get<2>(ymd),
+            //       line.total_expend_cent / 100, line.total_expend_cent % 100);
+            const auto ymd = date_get_ymd(line.orderdate);
+            append_u32(line.orderkey);
+            query.output += '|';
+            append_u32_width4(std::get<0>(ymd));
+            query.output += '-';
+            append_u32_width2(std::get<1>(ymd));
+            query.output += '-';
+            append_u32_width2(std::get<2>(ymd));
+            query.output += '|';
+            append_u32(line.total_expend_cent / 100);
+            query.output += '.';
+            append_u32_width2(line.total_expend_cent % 100);
+            query.output += '\n';
+        }
+
         DEBUG("[%u] query #%u done", tid, query_id);
         g_queries_done[query_id].mark_done();
     }
@@ -414,17 +457,11 @@ void fn_loader_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
             g_queries_done[query_id].wait_done();
 
             // print query
-            query_t& query = g_queries[query_id];
-            std::sort(query.result.begin(), query.result.end(), std::greater<>());
-            printf("l_orderkey|o_orderdate|revenue\n");
-            for (const query_result_t& line : query.result) {
-                const auto ymd = date_get_ymd(line.orderdate);
-                printf("%u|%u-%02u-%02u|%u.%02u\n",
-                       line.orderkey,
-                       std::get<0>(ymd), std::get<1>(ymd), std::get<2>(ymd),
-                       line.total_expend_cent / 100, line.total_expend_cent % 100);
-            }
+            const query_t& query = g_queries[query_id];
+            const size_t cnt = fwrite(query.output.data(), sizeof(char), query.output.length(), stdout);
+            CHECK(cnt == query.output.length());
         }
+        C_CALL(fflush(stdout));
     });
 
 }
