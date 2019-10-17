@@ -71,12 +71,12 @@ FORCEINLINE size_t calc_bucket_index(const uint8_t mktid, const date_t orderdate
 
 
 #if CONFIG_TOPN_DATES_PER_PLATE > 0
-FORCEINLINE uint32_t calc_topn_plate_index(const uint8_t mktid, const uint32_t orderdate) noexcept
+FORCEINLINE uint32_t calc_topn_plate_index(const uint8_t mktid, const date_t orderdate) noexcept
 {
     ASSERT(orderdate >= MIN_TABLE_DATE);
     ASSERT(orderdate <= MAX_TABLE_DATE);
 
-    return (uint32_t)(mktid - 0) * PLATES_PER_MKTID + (orderdate - MIN_TABLE_DATE) / CONFIG_TOPN_DATES_PER_PLATE;
+    return (uint32_t)(mktid - 0) * PLATES_PER_MKTID + (uint32_t)(orderdate - MIN_TABLE_DATE) / CONFIG_TOPN_DATES_PER_PLATE;
 }
 #endif
 
@@ -279,10 +279,13 @@ void fn_worker_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
 
         // NOTE: very carefully deal with q_orderdate
         if (LIKELY(!query.is_unknown_mktsegment && query.q_orderdate > MIN_TABLE_DATE)) {
-            const date_t scan_start_orderdate = date_subtract_bounded_to_min_table_date(query.q_shipdate, g_meta.max_shipdate_orderdate_diff - 1);
-            const date_t scan_end_orderdate = std::min<date_t>(query.q_orderdate, MAX_TABLE_DATE + 1);
+            const date_t scan_start_orderdate = std::max<date_t>(
+                query.q_shipdate - (g_meta.max_shipdate_orderdate_diff - 1),
+                MIN_TABLE_DATE);
             ASSERT(scan_start_orderdate >= MIN_TABLE_DATE);
             ASSERT(scan_start_orderdate <= MAX_TABLE_DATE + 1);
+
+            const date_t scan_end_orderdate = std::min<date_t>(query.q_orderdate, MAX_TABLE_DATE + 1);
             ASSERT(scan_end_orderdate >= MIN_TABLE_DATE);
             ASSERT(scan_end_orderdate <= MAX_TABLE_DATE + 1);
 

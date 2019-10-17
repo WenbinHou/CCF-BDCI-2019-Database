@@ -27,7 +27,7 @@ struct pretopn_desc_t
 
 struct order_t
 {
-    date_t orderdate : 12;
+    std::make_unsigned_t<date_t> orderdate : 12;
     uint8_t mktid : 4;
 };
 static_assert(sizeof(order_t) == 2);
@@ -110,12 +110,12 @@ FORCEINLINE size_t calc_bucket_index(const uint8_t mktid, const date_t orderdate
 
 
 #if CONFIG_TOPN_DATES_PER_PLATE > 0
-FORCEINLINE uint32_t calc_topn_plate_index(const uint8_t mktid, const uint32_t orderdate) noexcept
+FORCEINLINE uint32_t calc_topn_plate_index(const uint8_t mktid, const date_t orderdate) noexcept
 {
     ASSERT(orderdate >= MIN_TABLE_DATE);
     ASSERT(orderdate <= MAX_TABLE_DATE);
 
-    return (uint32_t)(mktid - 0) * PLATES_PER_MKTID + (orderdate - MIN_TABLE_DATE) / CONFIG_TOPN_DATES_PER_PLATE;
+    return (uint32_t)(mktid - 0) * PLATES_PER_MKTID + (uint32_t)(orderdate - MIN_TABLE_DATE) / CONFIG_TOPN_DATES_PER_PLATE;
 }
 #endif
 
@@ -551,12 +551,14 @@ void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) noexcept
             ASSERT(mktid < g_mktid_count, "Expect mktid < g_mktid_count (%u < %u)", mktid, g_mktid_count);
 
             const date_t orderdate = date_from_string(p);
+            ASSERT(orderdate >= MIN_TABLE_DATE);
+            ASSERT(orderdate <= MAX_TABLE_DATE);
             p += 10;  // skip 'yyyy-MM-dd'
 
             // Save to orderkey_to_order
-            //CHECK(mktid < (1 << 4), "Boom! mktid %u too large", mktid);
-            //CHECK(orderdate < (1 << 12), "BUG: orderdate too large?");
-            g_orderkey_to_order[orderkey] = { orderdate, mktid };
+            ASSERT(mktid < (1 << 4), "Boom! mktid %u too large", mktid);
+            ASSERT(orderdate < (1 << 12), "BUG: orderdate too large?");
+            g_orderkey_to_order[orderkey] = { (std::make_unsigned_t<date_t>)(orderdate), mktid };
 
             ASSERT(*p == '\n', "Expect EOL");
             p += 1;  // skip '\n'
@@ -713,7 +715,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             const date_t shipdate = date_from_string(p);
             p += 10;  // skip 'yyyy-MM-dd'
             ASSERT(shipdate > orderdate, "Expect shipdate > orderdate");
-            ASSERT((shipdate - orderdate) < (1 << 7), "shipdate - orderdate Boom!");
+            ASSERT((shipdate - orderdate) < (1 << 7), "shipdate - orderdate Boom! shipdate=%d, orderdate=%d", (int32_t)shipdate, (int32_t)orderdate);
             ASSERT(shipdate >= MIN_TABLE_DATE, "Expect shipdate >= MIN_TABLE_DATE");
             ASSERT(shipdate <= MAX_TABLE_DATE, "Expect shipdate <= MAX_TABLE_DATE");
             if (UNLIKELY(shipdate - orderdate) > max_orderdate_shipdate_diff) {
