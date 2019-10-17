@@ -60,7 +60,7 @@ FORCEINLINE date_t date_from_string(const char* const s) noexcept
 FORCEINLINE constexpr year_month_day_tuple date_get_ymd(const date_t date) noexcept
 {
     ASSERT(date >= MIN_TABLE_DATE - 1, "date should >= 1991-12-31");
-    ASSERT(date <= MAX_TABLE_DATE + 1, "date should <= 1999-01-01");
+    ASSERT(date <= MAX_TABLE_DATE + 1 + CONFIG_TOPN_DATES_PER_PLATE, "date should <= 1999-01-01 + CONFIG_TOPN_DATES_PER_PLATE");
 
     uint32_t value = (uint64_t)(date) + __min_table_date_u32 - 1;
     uint32_t year = (10000 * (uint64_t)value + 14780) / 3652425;

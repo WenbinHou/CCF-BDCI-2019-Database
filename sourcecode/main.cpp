@@ -18,6 +18,9 @@ int main(int argc, char* argv[])
         _PRINT_CONFIG(ENABLE_ATTEMPT_HUGETLB);
         _PRINT_CONFIG(ENABLE_ATTEMPT_SCHED_FIFO);
         _PRINT_CONFIG(CONFIG_LOAD_BUFFER_COUNT);
+        _PRINT_CONFIG(CONFIG_INDEX_SPARSE_SIZE_PER_BUCKET);
+        _PRINT_CONFIG(CONFIG_INDEX_TLS_BUFFER_SIZE);
+        _PRINT_CONFIG(CONFIG_INDEX_TLS_BUFFER_COUNT);
         _PRINT_CONFIG(CONFIG_MMAP_MAX_STEP_SIZE);
         _PRINT_CONFIG(CONFIG_MMAP_MIN_STEP_SIZE);
         _PRINT_CONFIG(CONFIG_MMAP_MAX_STEP_SIZE_HUGETLB);
@@ -26,10 +29,14 @@ int main(int argc, char* argv[])
         _PRINT_CONFIG(CONFIG_CUSTOMER_PART_BODY_SIZE);
         _PRINT_CONFIG(CONFIG_ORDERS_PART_BODY_SIZE);
         _PRINT_CONFIG(CONFIG_LINEITEM_PART_BODY_SIZE);
+        _PRINT_CONFIG(CONFIG_TOPN_DATES_PER_PLATE);
+        _PRINT_CONFIG(CONFIG_PRETOPN_BUFFER_COUNT);
+        _PRINT_CONFIG(CONFIG_PRETOPN_LOAD_INDEX_USE_PREAD);
+        _PRINT_CONFIG(CONFIG_EXPECT_MAX_TOPN);
 #undef _PRINT_CONFIG
     }
 
-    ASSERT(argc >= 5, "%s <customer_txt> <orders_txt> <lineitem_txt> <query_count> ...", argv[0]);
+    CHECK(argc >= 5, "%s <customer_txt> <orders_txt> <lineitem_txt> <query_count> ...", argv[0]);
 
     //
     // Open text files
@@ -39,17 +46,9 @@ int main(int argc, char* argv[])
         const char* const orders_text_path = argv[2];
         const char* const lineitem_text_path = argv[3];
 
-        const auto& open_file = [](/*in*/const char* const path, /*out*/load_file_context* const ctx) noexcept {
-            ctx->fd = C_CALL(open(path, O_RDONLY | O_CLOEXEC));
-            struct stat64 st;
-            C_CALL(fstat64(ctx->fd, &st));
-            ctx->file_size = st.st_size;
-            DEBUG("open %s: fd = %d, size = %lu", path, ctx->fd, ctx->file_size);
-        };
-
-        open_file(customer_text_path, &g_customer_file);
-        open_file(orders_text_path, &g_orders_file);
-        open_file(lineitem_text_path, &g_lineitem_file);
+        open_file_read(customer_text_path, &g_customer_file);
+        open_file_read(orders_text_path, &g_orders_file);
+        open_file_read(lineitem_text_path, &g_lineitem_file);
     }
 
 
@@ -124,31 +123,8 @@ int main(int argc, char* argv[])
     // Create loader threads and worker threads
     //
     {
-        [[maybe_unused]]
-        const auto pin_thread_to_cpu_core = [](const uint32_t tid) {
-            cpu_set_t cpu_set;
-            CPU_ZERO(&cpu_set);
-            CPU_SET(tid, &cpu_set);
-            PTHREAD_CALL_NO_PANIC(pthread_setaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set));
-        };
-
-        g_worker_threads.reserve(g_worker_sync_barrier.thread_count());
         g_loader_threads.reserve(g_loader_sync_barrier.thread_count());
-
-        for (uint32_t tid = 0; tid < g_worker_sync_barrier.thread_count(); ++tid) {
-            g_worker_threads.emplace_back(
-                [&, tid]() {
-#if ENABLE_PIN_THREAD_TO_CPU
-                    pin_thread_to_cpu_core(tid);
-#endif
-                    //sched_param param { };
-                    //param.sched_priority = sched_get_priority_max(SCHED_FIFO) - 1;  // TODO: slightly lower than loader threads
-                    //PTHREAD_CALL(pthread_setschedparam(pthread_self(), SCHED_FIFO, &param));
-                    //DEBUG("[%u] pthread_setschedparam SCHED_FIFO", tid);
-
-                    (is_creating_index ? fn_worker_thread_create_index : fn_worker_thread_use_index)(tid);
-                });
-        }
+        g_worker_threads.reserve(g_worker_sync_barrier.thread_count());
 
         for (uint32_t tid = 0; tid < g_loader_sync_barrier.thread_count(); ++tid) {
             g_loader_threads.emplace_back(
@@ -156,12 +132,23 @@ int main(int argc, char* argv[])
 #if ENABLE_PIN_THREAD_TO_CPU
                     pin_thread_to_cpu_core(tid);
 #endif
-                    //sched_param param { };
-                    //param.sched_priority = sched_get_priority_max(SCHED_FIFO);
-                    //PTHREAD_CALL(pthread_setschedparam(pthread_self(), SCHED_FIFO, &param));
-                    //DEBUG("[%u] pthread_setschedparam SCHED_FIFO", tid);
-
+#if ENABLE_ATTEMPT_SCHED_FIFO
+                    set_thread_fifo_scheduler(0);
+#endif
                     (is_creating_index ? fn_loader_thread_create_index : fn_loader_thread_use_index)(tid);
+                });
+        }
+
+        for (uint32_t tid = 0; tid < g_worker_sync_barrier.thread_count(); ++tid) {
+            g_worker_threads.emplace_back(
+                [&, tid]() {
+#if ENABLE_PIN_THREAD_TO_CPU
+                    pin_thread_to_cpu_core(tid);
+#endif
+#if ENABLE_ATTEMPT_SCHED_FIFO
+                    set_thread_fifo_scheduler(1);  // TODO: slightly lower than loader threads?
+#endif
+                    (is_creating_index ? fn_worker_thread_create_index : fn_worker_thread_use_index)(tid);
                 });
         }
     }

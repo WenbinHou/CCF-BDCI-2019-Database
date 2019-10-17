@@ -13,6 +13,12 @@
 #define LIKELY(...)                 (__builtin_expect((__VA_ARGS__), 1))
 #define UNLIKELY(...)               (__builtin_expect((__VA_ARGS__), 0))
 
+#define DISABLE_COPY_MOVE_CONSTRUCTOR(_Class_) \
+    _Class_(const _Class_&) noexcept = delete; \
+    _Class_(_Class_&&) noexcept = delete; \
+    _Class_& operator =(const _Class_&) noexcept = delete; \
+    _Class_& operator =(_Class_&&) noexcept = delete
+
 
 
 inline std::chrono::steady_clock::time_point __program_startup_time = std::chrono::steady_clock::now();

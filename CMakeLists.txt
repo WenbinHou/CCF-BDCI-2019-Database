@@ -17,10 +17,14 @@ endif()
 
 add_compile_options(
     -flto -Ofast
+    #-march=broadwell -mtune=broadwell
+    -march=native -mtune=native
     -Wall -Wextra -Winline)
 
 link_libraries(
     -flto -Ofast
+    #-march=broadwell -mtune=broadwell
+    -march=native -mtune=native
     -static-libgcc -static-libstdc++)
 
 add_executable(BDCI19

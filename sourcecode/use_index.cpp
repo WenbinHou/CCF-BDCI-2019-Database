@@ -86,9 +86,9 @@ void use_index_initialize() noexcept
     // Open index files
     {
         {
-            int count_fd;
+            int count_fd = -1;
             uint64_t count_file_size;
-            openat_file("meta", &count_fd, &count_file_size);
+            openat_file_read("meta", &count_fd, &count_file_size);
             const size_t cnt = C_CALL(read(count_fd, &g_meta, sizeof(g_meta)));
             CHECK(cnt == sizeof(g_meta));
             C_CALL(close(count_fd));
@@ -98,7 +98,7 @@ void use_index_initialize() noexcept
             g_partial_indices = new partial_index_t[g_meta.partial_index_count];
         }
 
-        openat_file("mktsegment", &g_mktsegment_fd, &g_mktsegment_file_size);
+        openat_file_read("mktsegment", &g_mktsegment_fd, &g_mktsegment_file_size);
     }
 
     // Load index files: load mktsegment
@@ -123,8 +123,8 @@ void use_index_initialize() noexcept
     {
         int pretopn_fd = -1, pretopn_count_fd = -1;
         uint64_t pretopn_size = 0, pretopn_count_size = 0;
-        openat_file("pretopn", &pretopn_fd, &pretopn_size);
-        openat_file("pretopn_count", &pretopn_count_fd, &pretopn_count_size);
+        openat_file_read("pretopn", &pretopn_fd, &pretopn_size);
+        openat_file_read("pretopn_count", &pretopn_count_fd, &pretopn_count_size);
 
         ASSERT(pretopn_size == sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN * g_mktid_count * PLATES_PER_MKTID);
         g_pretopn_ptr = (uint64_t*)my_mmap(
@@ -379,7 +379,8 @@ void fn_loader_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
             partial_index_t& partial = g_partial_indices[partial_id];
 
             snprintf(filename, std::size(filename), "items_%u", partial_id);
-            openat_file(filename, &partial.items_fd, &partial.items_file_size);
+            partial.items_fd = -1;
+            openat_file_read(filename, &partial.items_fd, &partial.items_file_size);
             partial.items_ptr = my_mmap(
                 partial.items_file_size,
                 PROT_READ,
@@ -389,7 +390,8 @@ void fn_loader_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
             DEBUG("g_partial_indices[%u].items_ptr = %p", partial_id, partial.items_ptr);
 
             snprintf(filename, std::size(filename), "endoffset_%u", partial_id);
-            openat_file(filename, &partial.endoffset_fd, &partial.endoffset_file_size);
+            partial.endoffset_fd = -1;
+            openat_file_read(filename, &partial.endoffset_fd, &partial.endoffset_file_size);
             partial.endoffset_ptr = (uint64_t*)my_mmap(
                 partial.endoffset_file_size,
                 PROT_READ,

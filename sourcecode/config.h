@@ -6,9 +6,9 @@
 #endif
 
 #if !defined(MAKE_FASTEST)
-#define ENABLE_ASSERTION                    1
-#define ENABLE_LOGGING_DEBUG                1
-#define ENABLE_LOGGING_INFO                 1
+#define ENABLE_ASSERTION                    0
+#define ENABLE_LOGGING_DEBUG                0
+#define ENABLE_LOGGING_INFO                 0
 #endif
 
 // Do we pin worker and loader threads to its corresponding CPU core?
@@ -52,12 +52,15 @@
 #define CONFIG_INDEX_TLS_BUFFER_SIZE        (4096 * 1)  // Tune factor as necessary
 #define CONFIG_INDEX_TLS_BUFFER_COUNT       (2 * 12800)
 
+// When calling mmap_allocate_parallel, how large does each mmap() allocates?
+// It must be inside [MIN_STEP_SIZE, MAX_STEP_SIZE]
 #define CONFIG_MMAP_MAX_STEP_SIZE           (1048576U * 16)
 #define CONFIG_MMAP_MIN_STEP_SIZE           (1024U * 64)
-
 #define CONFIG_MMAP_MAX_STEP_SIZE_HUGETLB   (1048576U * 8)
 #define CONFIG_MMAP_MIN_STEP_SIZE_HUGETLB   (1048576U * 2)
 
+// How many byte per mmap() when loading original text files?
+// Note, to deal with unaligned line-breaks, we have to overlap a little between each call
 #define CONFIG_PART_OVERLAPPED_SIZE         (4096U)
 #define CONFIG_CUSTOMER_PART_BODY_SIZE      (1048576U * 2 - CONFIG_PART_OVERLAPPED_SIZE)
 #define CONFIG_ORDERS_PART_BODY_SIZE        (1048576U * 8 - CONFIG_PART_OVERLAPPED_SIZE)
@@ -70,12 +73,17 @@
 #define CONFIG_TOPN_DATES_PER_PLATE         (8)
 static_assert(CONFIG_TOPN_DATES_PER_PLATE <= 64, "Max 6 bits for orderdate_diff in a plate");
 
-// Number of buffers when we load built indices when pre-calculating top-N
+// Number of buffers when we load built indices (when pre-calculating top-N)
 // Generally, 2 * loader_thread_count is fine
 #define CONFIG_PRETOPN_BUFFER_COUNT         (32)
 
+// Do we use pread() or mmap() to access those partial indices? (when pre-calculating top-N)
+//  0 - Use mmap()
+//  1 - Use pread()
 #define CONFIG_PRETOPN_LOAD_INDEX_USE_PREAD 1  // Suggest to be 1
 
-#define CONFIG_EXPECT_MAX_TOPN              (12000)  // According to problem description: 10000
+// "N" in top-N when pre-calculating
+// If this threshold is exceeded, we can't make use of the pretopn index any more (fallback to normal index scan)
+#define CONFIG_EXPECT_MAX_TOPN              (10000)  // According to problem description: 10000
 
 #endif  // !defined(_BDCI19_CONFIG_H_INCLUDED_)

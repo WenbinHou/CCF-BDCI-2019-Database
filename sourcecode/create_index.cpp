@@ -68,10 +68,6 @@ namespace
     mpmc_queue<size_t, CONFIG_LOAD_BUFFER_COUNT> g_orders_mapping_queue { };
     mpmc_queue<size_t, CONFIG_LOAD_BUFFER_COUNT> g_lineitem_mapping_queue { };
 
-    std::atomic_uint64_t g_customer_shared_offset { 0 };
-    std::atomic_uint64_t g_orders_shared_offset { 0 };
-    std::atomic_uint64_t g_lineitem_shared_offset { 0 };
-
     uint32_t g_max_custkey = 0;
     std::string g_all_mktsegments[256] { };
     std::mutex g_all_mktsegments_insert_mutex { };
@@ -208,7 +204,7 @@ void fn_loader_thread_create_index(const uint32_t tid) noexcept
 
         mmap_file_overlapped<CONFIG_CUSTOMER_PART_BODY_SIZE, CONFIG_PART_OVERLAPPED_SIZE>(
             g_loader_sync_barrier,
-            g_customer_shared_offset,
+            g_customer_file.shared_offset,
             tid,
             g_customer_file.file_size,
             g_customer_file.fd,
@@ -228,7 +224,7 @@ void fn_loader_thread_create_index(const uint32_t tid) noexcept
 
         mmap_file_overlapped<CONFIG_ORDERS_PART_BODY_SIZE, CONFIG_PART_OVERLAPPED_SIZE>(
             g_loader_sync_barrier,
-            g_orders_shared_offset,
+            g_orders_file.shared_offset,
             tid,
             g_orders_file.file_size,
             g_orders_file.fd,
@@ -257,13 +253,8 @@ void fn_loader_thread_create_index(const uint32_t tid) noexcept
 
             char items_file_name[32];
             snprintf(items_file_name, std::size(items_file_name), "items_%u", worker_tid);
-            ctx.items_fd = C_CALL(openat(
-                g_index_directory_fd,
-                items_file_name,
-                O_CREAT | O_EXCL | O_CLOEXEC | O_RDWR,
-                0644));
-            uint64_t sparse_size = (uint64_t)g_total_buckets * CONFIG_INDEX_SPARSE_SIZE_PER_BUCKET;
-            C_CALL(ftruncate(ctx.items_fd, sparse_size));
+            const uint64_t sparse_size = (uint64_t)g_total_buckets * CONFIG_INDEX_SPARSE_SIZE_PER_BUCKET;
+            openat_file_write(items_file_name, &ctx.items_fd, sparse_size, false);
 
             CHECK(CONFIG_INDEX_TLS_BUFFER_COUNT >= g_total_buckets);
             const uintptr_t curr_worker_start_ptr = (uintptr_t)__buffers_start_ptr + (uint64_t)worker_tid * CONFIG_INDEX_TLS_BUFFER_COUNT * CONFIG_INDEX_TLS_BUFFER_SIZE;
@@ -293,7 +284,7 @@ void fn_loader_thread_create_index(const uint32_t tid) noexcept
 
         mmap_file_overlapped<CONFIG_LINEITEM_PART_BODY_SIZE, CONFIG_PART_OVERLAPPED_SIZE>(
             g_loader_sync_barrier,
-            g_lineitem_shared_offset,
+            g_lineitem_file.shared_offset,
             tid,
             g_lineitem_file.file_size,
             g_lineitem_file.fd,
@@ -331,27 +322,19 @@ void fn_loader_thread_create_index(const uint32_t tid) noexcept
     // Load built indices for pre calculating top-N
     {
         g_loader_sync_barrier.run_once_and_sync([]() {
-            g_pretopn_fd = C_CALL(openat(
-                g_index_directory_fd,
+            openat_file_write(
                 "pretopn",
-                O_RDWR | O_CREAT | O_CLOEXEC | O_EXCL,
-                0666));
+                &g_pretopn_fd,
+                sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN * g_mktid_count * PLATES_PER_MKTID,
+                false);
             INFO("g_pretopn_fd: %d", g_pretopn_fd);
 
-            C_CALL(ftruncate(
-                g_pretopn_fd,
-                sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN * g_mktid_count * PLATES_PER_MKTID));
-
-            g_pretopn_count_fd = C_CALL(openat(
-                g_index_directory_fd,
+            openat_file_write(
                 "pretopn_count",
-                O_RDWR | O_CREAT | O_CLOEXEC | O_EXCL,
-                0666));
+                &g_pretopn_count_fd,
+                sizeof(uint32_t) * g_mktid_count * PLATES_PER_MKTID,
+                true);
             INFO("g_pretopn_count_fd: %d", g_pretopn_count_fd);
-
-            C_CALL(ftruncate(
-                g_pretopn_count_fd,
-                sizeof(uint32_t) * g_mktid_count * PLATES_PER_MKTID));
 
             g_pretopn_count_ptr = (uint32_t*)my_mmap(
                 sizeof(uint32_t) * g_mktid_count * PLATES_PER_MKTID,
@@ -1088,13 +1071,13 @@ void create_index_initialize() noexcept
         g_mapping_buffers.init([](const size_t idx) -> size_t {
             ASSERT(idx < CONFIG_LOAD_BUFFER_COUNT);
             return idx;
-        });
+        }, CONFIG_LOAD_BUFFER_COUNT);
 
 #if CONFIG_TOPN_DATES_PER_PLATE > 0
         g_pretopn_buffers.init([&](const uint32_t idx) {
             ASSERT(idx < CONFIG_PRETOPN_BUFFER_COUNT);
             return idx;
-        });
+        }, CONFIG_PRETOPN_BUFFER_COUNT);
 #endif
     }
 

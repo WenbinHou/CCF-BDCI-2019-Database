@@ -8,22 +8,26 @@ class bounded_bag
     static_assert(_Capacity > 0);
 
 public:
-    FORCEINLINE bounded_bag() noexcept
-    {
-        C_CALL(sem_init(&_sem_pop, /*pshared*/0, _Capacity));
-    }
+    DISABLE_COPY_MOVE_CONSTRUCTOR(bounded_bag);
+
+    FORCEINLINE bounded_bag() noexcept = default;
 
     FORCEINLINE ~bounded_bag() noexcept
     {
-        C_CALL(sem_destroy(&_sem_pop));
+        if (_initialized) {
+            C_CALL(sem_destroy(&_sem_pop));
+        }
     }
 
     FORCEINLINE void init(
         /*in*/ const std::function<T(size_t)>& fn_init,
-        /*in*/ const size_t init_count = _Capacity) noexcept
+        /*in*/ const size_t init_count /*= _Capacity*/) noexcept
     {
+        ASSERT(!_initialized, "init() has been called?");
+        _initialized = true;
+
         ASSERT(init_count <= _Capacity);
-        if (init_count) {
+        if (init_count > 0) {
             ASSERT(fn_init);
         }
 
@@ -33,6 +37,8 @@ public:
 
         _head.store(0);
         _tail.store(init_count);
+
+        C_CALL(sem_init(&_sem_pop, /*pshared*/0, init_count));
     }
 
     FORCEINLINE void take(/*out*/ T* item) noexcept
@@ -41,19 +47,6 @@ public:
 
         ASSERT(_head < _tail);
         *item = _items[(_head++) % _Capacity];
-    }
-
-    FORCEINLINE bool try_take(/*out*/ T* item) noexcept
-    {
-        if (sem_trywait(&_sem_pop) < 0) {
-            CHECK(errno == EAGAIN, "sem_trywait() failed. errno = %d (%s)", errno, strerror(errno));
-            return false;
-        }
-
-        ASSERT(_head < _tail);
-        *item = _items[(_head++) % _Capacity];
-
-        return true;
     }
 
     FORCEINLINE void return_back(/*in*/ const T& item) noexcept
@@ -68,6 +61,7 @@ public:
     }
 
 private:
+    bool _initialized = false;
     T _items[_Capacity];
     sem_t _sem_pop;
     std::atomic_size_t _head;
@@ -87,22 +81,26 @@ class spsc_bounded_bag
     static_assert(_Capacity > 0);
 
 public:
-    FORCEINLINE spsc_bounded_bag() noexcept
-    {
-        C_CALL(sem_init(&_sem_pop, /*pshared*/0, _Capacity));
-    }
+    DISABLE_COPY_MOVE_CONSTRUCTOR(spsc_bounded_bag);
+
+    FORCEINLINE spsc_bounded_bag() noexcept = default;
 
     FORCEINLINE ~spsc_bounded_bag() noexcept
     {
+        ASSERT(_initialized);
+
         C_CALL(sem_destroy(&_sem_pop));
     }
 
     FORCEINLINE void init(
         /*in*/ const std::function<T(size_t)>& fn_init,
-        /*in*/ const size_t init_count = _Capacity) noexcept
+        /*in*/ const size_t init_count /*= _Capacity*/) noexcept
     {
+        ASSERT(!_initialized, "init() has been called?");
+        _initialized = true;
+
         ASSERT(init_count <= _Capacity);
-        if (init_count) {
+        if (init_count > 0) {
             ASSERT(fn_init);
         }
 
@@ -112,48 +110,31 @@ public:
 
         _head = 0;
         _tail = init_count;
-        std::atomic_thread_fence(std::memory_order_release);
+
+        C_CALL(sem_init(&_sem_pop, /*pshared*/0, init_count));
     }
 
     FORCEINLINE void take(/*out*/ T* item) noexcept
     {
         C_CALL(sem_wait(&_sem_pop));
 
-        std::atomic_thread_fence(std::memory_order_acquire);
         ASSERT(_head < _tail);
         *item = _items[(_head++) % _Capacity];
-        std::atomic_thread_fence(std::memory_order_release);
-    }
-
-    FORCEINLINE bool try_take(/*out*/ T* item) noexcept
-    {
-        if (sem_trywait(&_sem_pop) < 0) {
-            CHECK(errno == EAGAIN, "sem_trywait() failed. errno = %d (%s)", errno, strerror(errno));
-            return false;
-        }
-
-        std::atomic_thread_fence(std::memory_order_acquire);
-        ASSERT(_head < _tail);
-        *item = _items[(_head++) % _Capacity];
-        std::atomic_thread_fence(std::memory_order_release);
-
-        return true;
     }
 
     FORCEINLINE void return_back(/*in*/ const T& item) noexcept
     {
         {
             //std::unique_lock<decltype(_lock)> lock(_lock);
-            std::atomic_thread_fence(std::memory_order_acquire);
             ASSERT(_head <= _tail);
             _items[(_tail++) % _Capacity] = item;
-            std::atomic_thread_fence(std::memory_order_release);
         }
 
         C_CALL(sem_post(&_sem_pop));
     }
 
 private:
+    bool _initialized = false;
     T _items[_Capacity];
     sem_t _sem_pop;
     volatile size_t _head;
