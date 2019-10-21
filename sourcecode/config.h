@@ -70,7 +70,7 @@
 // Calculate top-N in advance every several days
 //   0 - Don't calculate top-N in advance
 //  >0 - Calculate top-N every these days in advance
-#define CONFIG_TOPN_DATES_PER_PLATE         (8)
+#define CONFIG_TOPN_DATES_PER_PLATE         (16)
 static_assert(CONFIG_TOPN_DATES_PER_PLATE <= 64, "Max 6 bits for orderdate_diff in a plate");
 
 // Number of buffers when we load built indices (when pre-calculating top-N)

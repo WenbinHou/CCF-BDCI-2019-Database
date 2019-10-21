@@ -241,6 +241,63 @@ void fn_worker_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
             }
         };
 
+        const auto scan_orderdate_skip_check_shipdate = [&](const date_t orderdate) {
+            const uint32_t bucket = calc_bucket_index(query.q_mktid, orderdate);
+
+            for (uint32_t partial_id = 0; partial_id < g_meta.partial_index_count; ++partial_id) {
+
+                const partial_index_t& partial = g_partial_indices[partial_id];
+                const uintptr_t scan_begin_offset = (uintptr_t)bucket * CONFIG_INDEX_SPARSE_SIZE_PER_BUCKET;
+                const uintptr_t scan_end_offset = (uintptr_t)partial.endoffset_ptr[bucket];
+                //DEBUG("[%u] query #%u: orderdate=%u, partial_id=%u,scan_begin_offset=0x%lx, scan_end_offset=0x%lx",
+                //      tid, query_id, orderdate, partial_id, scan_begin_offset, scan_end_offset);
+
+                uint32_t total_expend_cent = 0;
+                const auto maybe_update_topn = [&](const uint32_t orderkey) {
+                    if (total_expend_cent == 0) {
+                        return;
+                    }
+
+                    query_result_t tmp;
+                    tmp.orderdate = orderdate;
+                    tmp.orderkey = orderkey;
+                    tmp.total_expend_cent = total_expend_cent;
+
+                    if (query.result.size() < query.q_topn) {
+                        query.result.emplace_back(std::move(tmp));
+                        if (query.result.size() == query.q_topn) {
+                            std::make_heap(query.result.begin(), query.result.end(), std::greater<>());
+                        }
+                    }
+                    else {
+                        if (tmp > *query.result.begin()) {
+                            std::pop_heap(query.result.begin(), query.result.end(), std::greater<>());
+                            *query.result.rbegin() = tmp;
+                            std::push_heap(query.result.begin(), query.result.end(), std::greater<>());
+                        }
+                    }
+                };
+
+                for (uint64_t off = scan_begin_offset; off < scan_end_offset; off += 4) {
+                    const uint32_t value = *(uint32_t*)((uintptr_t)partial.items_ptr + off);
+                    if (value & 0x80000000) {  // This is orderkey
+                        const uint32_t orderkey = value & ~0x80000000;
+                        maybe_update_topn(orderkey);
+                        total_expend_cent = 0;
+                    }
+                    else {
+#if ENABLE_ASSERTION
+                        const date_t shipdate = orderdate + (value >> 24);
+                        ASSERT(shipdate > query.q_shipdate);
+#endif
+                        const uint32_t expend_cent = value & 0x00FFFFFF;
+                        ASSERT(expend_cent > 0);
+                        total_expend_cent += expend_cent;
+                    }
+                }
+            }
+        };
+
 #if CONFIG_TOPN_DATES_PER_PLATE > 0
         const auto scan_plate = [&](const uint32_t plate_id, const date_t from_orderdate) {
             ASSERT(plate_id < g_mktid_count * PLATES_PER_MKTID);
@@ -338,7 +395,7 @@ void fn_worker_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
 
                 for (date_t orderdate = scan_start_pretopn_orderdate; orderdate < scan_end_pretopn_orderdate; ++orderdate) {
                     if (orderdate < scan_start_pretopn_orderdate_aligned) {
-                        scan_orderdate(orderdate);
+                        scan_orderdate_skip_check_shipdate(orderdate);
                     }
                     else if (orderdate >= scan_start_pretopn_orderdate_aligned && orderdate < scan_end_pretopn_orderdate_aligned) {
                         if ((orderdate - MIN_TABLE_DATE) % CONFIG_TOPN_DATES_PER_PLATE == 0) {
@@ -350,7 +407,7 @@ void fn_worker_thread_use_index([[maybe_unused]] const uint32_t tid) noexcept
                         }
                     }
                     else if (orderdate >= scan_end_pretopn_orderdate_aligned) {
-                        scan_orderdate(orderdate);
+                        scan_orderdate_skip_check_shipdate(orderdate);
                     }
                 }
             }
