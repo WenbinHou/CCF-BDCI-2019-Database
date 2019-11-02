@@ -1,0 +1,15 @@
+# IDE files
+/.idea/
+/cmake-build-*/
+build/
+
+# Text data files
+/data/customer.*
+/data/orders.*
+/data/lineitem.*
+
+# Built index
+index/
+
+# Test output
+/test/*.stdout
