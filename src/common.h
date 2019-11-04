@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/ipc.h>
+#include <sys/resource.h>
 #include <sys/shm.h>
 #include <thread>
 #include <unistd.h>
@@ -43,8 +44,13 @@ typedef uint64_t index64_t;
 #include "config.h"
 #include "macros.h"
 
+#include "str.h"
 #include "futex.h"
 #include "sem.h"
+#include "mm.h"
+
+
+#define ACTION_DROP_PAGE_CACHE      "drop_page_cache"
 
 
 #endif  // !defined(_BDCI19_COMMON_H_INCLUDED_)
