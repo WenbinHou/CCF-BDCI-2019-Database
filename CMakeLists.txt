@@ -13,13 +13,13 @@ project(BDCI19
 set(CMAKE_VERBOSE_MAKEFILE ON)
 
 
-file(GLOB CPP_SRC_FILES
+file(GLOB_RECURSE CPP_SRC_FILES
     CONFIGURE_DEPENDS
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
     src/*.cpp)
 message(STATUS "CPP_SRC_FILES: ${CPP_SRC_FILES}")
 
-file(GLOB CUDA_SRC_FILES
+file(GLOB_RECURSE CUDA_SRC_FILES
     CONFIGURE_DEPENDS
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
     src/*.cu)
@@ -40,13 +40,27 @@ string(APPEND CUDA_FLAGS " -gencode arch=compute_60,code=sm_60")
 set_source_files_properties(${CUDA_SRC_FILES} PROPERTIES COMPILE_FLAGS "${CUDA_FLAGS}")
 
 
-add_executable(BDCI19 ${CPP_SRC_FILES} ${CUDA_SRC_FILES})
+find_package(Threads REQUIRED)
+link_libraries(
+    -static-libgcc -static-libstdc++
+    Threads::Threads)
+
+
+#
+# Executable: BDCI19
+#
+add_executable(BDCI19
+    src/create_index.cpp
+    src/use_index.cpp
+    src/main.cpp)
 
 if (MAKE_FASTEST)
     target_compile_definitions(BDCI19 PUBLIC MAKE_FASTEST=1)
 endif()
 
-find_package(Threads REQUIRED)
-target_link_libraries(BDCI19 PRIVATE
-    -static-libgcc -static-libstdc++
-    Threads::Threads)
+
+#
+# Executable: debug_preload
+#
+add_executable(debug_preload EXCLUDE_FROM_ALL
+    src/debug/debug_preload.cpp)

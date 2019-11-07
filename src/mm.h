@@ -112,7 +112,7 @@ uint64_t mem_get_free_bytes() noexcept
 
 
 __always_inline
-bool  mem_drop_cache() noexcept
+bool mem_drop_cache() noexcept
 {
     // To free page cache:
     //   echo 1 > /proc/sys/vm/drop_caches
@@ -121,13 +121,57 @@ bool  mem_drop_cache() noexcept
     // To free slab objects and page cache:
     //   echo 3 > /proc/sys/vm/drop_caches
     const int fd = C_CALL_NO_PANIC(open("/proc/sys/vm/drop_caches", O_RDWR | O_CLOEXEC));
-    if (fd >= 0) {
-        const char content = '3';
-        const size_t cnt = (size_t)C_CALL(write(fd, &content, sizeof(content)));
-        CHECK(cnt == sizeof(content));
-        return true;
+    if (fd < 0) {
+        return false;
     }
-    return false;
+
+    const char content = '3';
+    const size_t cnt = (size_t)C_CALL(write(fd, &content, sizeof(content)));
+    CHECK(cnt == sizeof(content));
+
+    return true;
+}
+
+
+__always_inline
+uint64_t mem_get_nr_hugepages_1048576kB() noexcept
+{
+    return __read_file_u64("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages");
+}
+
+__always_inline
+bool mem_set_nr_hugepages_1048576kB(const uint64_t nr_hugepages) noexcept
+{
+    return __write_file_u64(
+        "/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages",
+        nr_hugepages);
+}
+
+__always_inline
+uint64_t mem_get_nr_hugepages_2048kB() noexcept
+{
+    return __read_file_u64("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages");
+}
+
+__always_inline
+bool mem_set_nr_hugepages_2048kB(const uint64_t nr_hugepages) noexcept
+{
+    return __write_file_u64(
+        "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages",
+        nr_hugepages);
+}
+
+__always_inline
+void debug_print_cgroup() noexcept
+{
+#if ENABLE_LOGGING_DEBUG
+    char buffer[4096];
+    const int fd = C_CALL(open("/proc/self/cgroup", O_RDONLY | O_CLOEXEC));
+    const size_t cnt = C_CALL(read(fd, buffer, std::size(buffer)));
+    CHECK(cnt < std::size(buffer));
+    DEBUG("/proc/self/cgroup:\n%.*s", (int)cnt, buffer);
+    C_CALL(close(fd));
+#endif
 }
 
 #endif  // !defined(_BDCI19_MEM_H_INCLUDED_)
