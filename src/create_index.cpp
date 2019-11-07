@@ -118,6 +118,20 @@ static void load_file_overlapped(
 }
 
 
+template<char _Delimiter>
+__always_inline
+uint32_t __parse_u32(const char* s) noexcept
+{
+    uint32_t result = 0;
+    do {
+        ASSERT(*s >= '0' && *s <= '9', "Unexpected char: %c", *s);
+        result = result * 10 + (*s - '0');
+        ++s;
+    } while (*s != _Delimiter);
+    return result;
+}
+
+
 void fn_loader_thread_create_index(const uint32_t tid) noexcept
 {
     DEBUG("[loader:%u] fn_loader_thread_create_index() starts", tid);
@@ -160,13 +174,36 @@ void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid) noexce
         const char* p = (const char*)((uintptr_t)g_txt_mapping_buffer_start_ptr + (uintptr_t)part_index * TXT_MAPPING_BUFFER_SIZE);
         const char* end = p + part.desired_size;
 
+        // Get beginning custkey -> last_custkey
+        uint32_t last_custkey = 0;
         if (!part.is_first()) {
             while (*p != '\n') ++p;
-            ++p;
+            ++p;  // skip '\n'
+
+            last_custkey = __parse_u32<'|'>(p);
+            if (last_custkey % 2 == 0) {
+                while (*p != '\n') ++p;
+                ++p;  // skip '\n'
+                ++last_custkey;
+            }
         }
+        else {  // part.is_first()
+            last_custkey = 1;
+        }
+        ASSERT(last_custkey % 2 == 1);
+        ASSERT(last_custkey > 0);
+        ASSERT(last_custkey <= g_max_custkey, "Unexpected last_custkey (too large): %u", last_custkey);
+        --last_custkey;
+
         if (!part.is_last()) {
             while (*end != '\n') ++end;
-            ++end;
+            ++end;  // skip '\n'
+
+            const uint32_t to_custkey = __parse_u32<'|'>(end);
+            if (to_custkey % 2 == 1) {
+                while (*end != '\n') ++end;
+                ++end;  // skip '\n'
+            }
         }
 
         //DEBUG("[%u] load customer: [%p, %p)", tid, p, end);
@@ -174,78 +211,82 @@ void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid) noexce
         ++g_shared->customer_file_loaded_parts;
 #endif
 
-        // Get beginning custkey -> last_custkey
-        uint32_t last_custkey = 0;
-        const char* tmp_p = p;
-        while (*tmp_p != '|') {
-            ASSERT(*tmp_p >= '0' && *tmp_p <= '9', "Unexpected char: %c", *tmp_p);
-            last_custkey = last_custkey * 10 + (*tmp_p - '0');
-            ++tmp_p;
-        }
-        ASSERT(last_custkey > 0);
-        ASSERT(last_custkey <= g_max_custkey, "Unexpected last_custkey (too large): %u", last_custkey);
-        --last_custkey;
-
+        uint32_t write_offset = last_custkey / 2;
         while (p < end) {
-            ++last_custkey;
+            ASSERT(last_custkey % 2 == 0);
+            uint8_t write_value = 0;
+
+            //TODO: #pragma GCC unroll 2
+            for (uint32_t inner = 0; inner < 2; ++inner) {
+                ++last_custkey;
 #if ENABLE_ASSERTION
-            uint32_t custkey = 0;
-            while (*p != '|') {
-                ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
-                custkey = custkey * 10 + (*p - '0');
-                ++p;
-            }
-            ASSERT(custkey == last_custkey);
+                uint32_t custkey = 0;
+                while (*p != '|') {
+                    ASSERT(*p >= '0' && *p <= '9', "Unexpected char: %c", *p);
+                    custkey = custkey * 10 + (*p - '0');
+                    ++p;
+                }
+                ASSERT(custkey == last_custkey);
 #else
-            const uint32_t custkey = last_custkey;
-            while (*p != '|') {
-                ++p;
-            }
+                const uint32_t custkey = last_custkey;
+                while (*p != '|') {
+                    ++p;
+                }
 #endif
-            ++p;  // skip '|'
-            ASSERT(custkey <= g_max_custkey, "Unexpected custkey (too large): %u", custkey);
+                ++p;  // skip '|'
+                ASSERT(custkey <= g_max_custkey, "Unexpected custkey (too large): %u", custkey);
 
-            const char* const mktsegment_start = p;
-            while (*p != '\n') {
-                ++p;
-            }
-            const char* const mktsegment_end = p;
-
-            //std::string_view mktsegment_view(mktsegment_start, mktsegment_end - mktsegment_start);
-            ++p;  // skip '\n'
-
-            const auto try_find_mktsegment = [&]() -> bool {
-                for (int8_t i = g_shared->mktid_count - 1; i >= 0; --i) {
-                    if (g_shared->all_mktsegments[i].name[0] != *mktsegment_start) continue;
-                    //if (std::string_view(g_shared->all_mktsegments[i].name, g_shared->all_mktsegments[i].length) == mktsegment_view) {
-                        g_custkey_to_mktid[custkey] = (uint8_t)i;
-                        return true;
-                    //}
+                const char* const mktsegment_start = p;
+                while (*p != '\n') {
+                    ++p;
                 }
-                return false;
-            };
+                const char* const mktsegment_end = p;
+                ++p;  // skip '\n'
 
-            if (!try_find_mktsegment()) {
-                std::unique_lock<decltype(g_shared->all_mktsegments_insert_mutex)> lock(g_shared->all_mktsegments_insert_mutex);
+                //std::string_view mktsegment_view(mktsegment_start, mktsegment_end - mktsegment_start);
+
+                const auto try_find_mktsegment = [&]() -> bool {
+                    for (int8_t mktid = g_shared->mktid_count - 1; mktid >= 0; --mktid) {
+                        if (g_shared->all_mktsegments[mktid].name[0] != *mktsegment_start) continue;
+                        //if (std::string_view(g_shared->all_mktsegments[mktid].name, g_shared->all_mktsegments[mktid].length) == mktsegment_view) {
+                            ASSERT(mktid < (1 << 4));
+                            write_value |= mktid << (inner * 4);
+                            return true;
+                        //}
+                    }
+                    return false;
+                };
+
                 if (!try_find_mktsegment()) {
-                    DEBUG("custkey = %u, & = %p", custkey, &g_custkey_to_mktid[custkey]);
-                    g_custkey_to_mktid[custkey] = g_shared->mktid_count;
-                    g_shared->all_mktsegments[g_shared->mktid_count].length = (uint8_t)(mktsegment_end - mktsegment_start);
-                    strncpy(
-                        g_shared->all_mktsegments[g_shared->mktid_count].name,
-                        mktsegment_start,
-                        mktsegment_end - mktsegment_start);
-                    INFO("found new mktsegment: %.*s -> %u",
-                         (int)g_shared->all_mktsegments[g_shared->mktid_count].length,
-                         g_shared->all_mktsegments[g_shared->mktid_count].name,
-                         g_shared->mktid_count);
-                    ++g_shared->mktid_count;
+                    std::unique_lock<decltype(g_shared->all_mktsegments_insert_mutex)> lock(
+                        g_shared->all_mktsegments_insert_mutex);
+                    if (!try_find_mktsegment()) {
+                        const uint32_t new_mktid = g_shared->mktid_count++;
+                        std::atomic_thread_fence(std::memory_order_seq_cst);
+                        ASSERT(new_mktid < (1 << 4));
+                        write_value |= new_mktid << (inner * 4);
 
-                    // TODO:
-                    //g_shared->total_buckets = g_shared->mktid_count * BUCKETS_PER_MKTID;
-                    //g_shared->buckets_per_holder = DIV_UP(g_shared->total_buckets, CONFIG_INDEX_HOLDER_COUNT);
+                        g_shared->all_mktsegments[new_mktid].length = (uint8_t)(mktsegment_end - mktsegment_start);
+                        strncpy(
+                            g_shared->all_mktsegments[new_mktid].name,
+                            mktsegment_start,
+                            mktsegment_end - mktsegment_start);
+                        INFO("found new mktsegment: custkey = %u, %.*s -> %u",
+                             custkey,
+                             (int)g_shared->all_mktsegments[new_mktid].length,
+                             g_shared->all_mktsegments[new_mktid].name,
+                             new_mktid);
+
+                        // TODO:
+                        //g_shared->total_buckets = g_shared->mktid_count * BUCKETS_PER_MKTID;
+                        //g_shared->buckets_per_holder = DIV_UP(g_shared->total_buckets, CONFIG_INDEX_HOLDER_COUNT);
+                    }
                 }
             }
+
+            ASSERT(last_custkey % 2 == 0);
+            ASSERT(write_offset == (last_custkey - 1) / 2);
+            g_custkey_to_mktid[write_offset++] = write_value;
         }
 
         g_txt_mapping_buffers.return_back(part_index);
@@ -318,8 +359,17 @@ void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) noexcept
                 ++p;
             }
             ++p;  // skip '|'
+            ASSERT(custkey >= 1);
             ASSERT(custkey <= g_max_custkey, "Unexpected custkey (too large): %u", custkey);
-            const uint8_t mktid = g_custkey_to_mktid[custkey / 6];
+            const uint8_t mktid_embed = g_custkey_to_mktid[(custkey - 1) / 2];
+
+            //if (custkey % 2 == 1) {
+            //    mktid = mktid_embed & 0b00001111;
+            //}
+            //else {  // custkey % 2 == 0
+            //    mktid = (mktid_embed & 0b11110000) >> 4;
+            //}
+            const uint8_t mktid = ((uint32_t)mktid_embed << (24 + ((custkey & 1) << 2))) >> 28;  // this saves 100 ms
             ASSERT(mktid < g_shared->mktid_count, "Expect mktid < g_shared->mktid_count (%u < %u)", mktid, g_shared->mktid_count);
 
             const date_t orderdate = date_from_string(p);
@@ -427,18 +477,18 @@ void create_index_initialize_before_fork() noexcept
 
     // Initialize g_custkey_to_mktid_shmid
     {
-        g_custkey_to_mktid = (uint8_t*)mmap_reserve_space(
-            sizeof(g_custkey_to_mktid[0]) * (g_max_custkey + 1));
+        const uint64_t mem_size = sizeof(g_custkey_to_mktid[0]) * (g_max_custkey / 2 + 1);
+
+        g_custkey_to_mktid = (uint8_t*)mmap_reserve_space(mem_size);
         INFO("g_custkey_to_mktid: %p", g_custkey_to_mktid);
 
         g_custkey_to_mktid_shmid = C_CALL(shmget(
             SHMKEY_CUSTKEY_TO_MKTID,
-            sizeof(g_custkey_to_mktid[0]) * (g_max_custkey + 1),
+            mem_size,
             IPC_CREAT | 0666 | SHM_HUGETLB | SHM_HUGE_2MB));
         INFO("g_custkey_to_mktid_shmid: %d", g_custkey_to_mktid_shmid);
 
-        INFO("g_custkey_to_mktid: %p (size: 0x%lx)",
-            g_custkey_to_mktid, sizeof(g_custkey_to_mktid[0]) * (g_max_custkey + 1));
+        INFO("g_custkey_to_mktid: %p (size: 0x%lx)", g_custkey_to_mktid, mem_size);
     }
 
     // Initialize g_orderkey_to_order_shmid

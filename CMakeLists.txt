@@ -29,7 +29,7 @@ message(STATUS "CUDA_SRC_FILES: ${CUDA_SRC_FILES}")
 set(CPP_FLAGS "")
 string(APPEND CPP_FLAGS " -std=gnu++17 -Ofast")
 string(APPEND CPP_FLAGS " -flto -mtune=broadwell -march=broadwell")
-string(APPEND CPP_FLAGS " -funsafe-loop-optimizations -fstack-protector-explicit")
+string(APPEND CPP_FLAGS " -funsafe-loop-optimizations -fstack-protector-explicit -funroll-loops")
 string(APPEND CPP_FLAGS " -Wunsafe-loop-optimizations -Wall -Wextra -Weffc++ -Winline -Wformat=2")
 set_source_files_properties(${CPP_SRC_FILES} PROPERTIES COMPILE_FLAGS "${CPP_FLAGS}")
 

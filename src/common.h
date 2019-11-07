@@ -92,7 +92,7 @@ public:
     sync_barrier loader_sync_barrier { };
     sync_barrier worker_sync_barrier { };
 
-    uint8_t mktid_count = 0;
+    volatile uint8_t mktid_count = 0;
     struct {
         uint8_t length;
         char name[12];
