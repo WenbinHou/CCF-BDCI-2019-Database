@@ -52,10 +52,6 @@ void __mapper_initialize() noexcept
     DEBUG("__mmap_ptr_top: %p", (void*)__mmap_ptr_top);
 
     __mmap_ptr = __mmap_ptr_top;
-
-    // We require hugetlb
-    const uint64_t nr_2mb = mem_get_nr_hugepages_2048kB();
-    CHECK(nr_2mb >= 2560, "Require at least 2560 * 2MB hugepages");
 }
 
 

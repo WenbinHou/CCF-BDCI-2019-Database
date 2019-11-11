@@ -124,7 +124,7 @@ inline std::chrono::steady_clock::time_point __program_startup_time = std::chron
     (([](auto const _ret_) { \
         static_assert(std::is_signed_v<decltype(_ret_)>, "Should return signed type"); \
         if (__unlikely(_ret_ < 0)) { \
-            PANIC("%s failed with %ld. errno: %d (%s)", #_Call_, (int64_t)_ret_, errno, strerror(errno)); \
+            PANIC("%s failed with %ld. errno = %d (%s)", #_Call_, (int64_t)_ret_, errno, strerror(errno)); \
         } \
         return _ret_; \
     })(_Call_))
@@ -133,7 +133,7 @@ inline std::chrono::steady_clock::time_point __program_startup_time = std::chron
     (([](auto const _ret_) { \
         static_assert(std::is_signed_v<decltype(_ret_)>, "Should return signed type"); \
         if (__unlikely(_ret_ < 0)) { \
-            WARN("%s failed with %ld. errno: %d (%s)", #_Call_, (int64_t)_ret_, errno, strerror(errno)); \
+            WARN("%s failed with %ld. errno = %d (%s)", #_Call_, (int64_t)_ret_, errno, strerror(errno)); \
         } \
         return _ret_; \
     })(_Call_))

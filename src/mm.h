@@ -114,20 +114,40 @@ uint64_t mem_get_free_bytes() noexcept
 __always_inline
 bool mem_drop_cache() noexcept
 {
+    // To sync dirty pages to disk
+    sync();
+
+    // To compact physical memory (although not much help)
+    {
+        const int fd = C_CALL_NO_PANIC(open("/proc/sys/vm/compact_memory", O_WRONLY | O_CLOEXEC));
+        if (fd < 0) {
+            return false;
+        }
+
+        const char content = '1';
+        const size_t cnt = (size_t)C_CALL(write(fd, &content, sizeof(content)));
+        CHECK(cnt == sizeof(content));
+    }
+
+    // To sync dirty pages to disk again (although not much help)
+    sync();
+
     // To free page cache:
     //   echo 1 > /proc/sys/vm/drop_caches
     // To free reclaimable slab objects (includes dentries and inodes):
     //   echo 2 > /proc/sys/vm/drop_caches
     // To free slab objects and page cache:
     //   echo 3 > /proc/sys/vm/drop_caches
-    const int fd = C_CALL_NO_PANIC(open("/proc/sys/vm/drop_caches", O_RDWR | O_CLOEXEC));
-    if (fd < 0) {
-        return false;
-    }
+    {
+        const int fd = C_CALL_NO_PANIC(open("/proc/sys/vm/drop_caches", O_WRONLY | O_CLOEXEC));
+        if (fd < 0) {
+            return false;
+        }
 
-    const char content = '3';
-    const size_t cnt = (size_t)C_CALL(write(fd, &content, sizeof(content)));
-    CHECK(cnt == sizeof(content));
+        const char content = '3';
+        const size_t cnt = (size_t)C_CALL(write(fd, &content, sizeof(content)));
+        CHECK(cnt == sizeof(content));
+    }
 
     return true;
 }

@@ -64,3 +64,9 @@ endif()
 #
 add_executable(debug_preload EXCLUDE_FROM_ALL
     src/debug/debug_preload.cpp)
+
+#
+# Executable: debug_sysv_perf
+#
+add_executable(debug_sysv_perf EXCLUDE_FROM_ALL
+    src/debug/debug_sysv_perf.cpp)

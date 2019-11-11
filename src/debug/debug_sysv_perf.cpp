@@ -1,20 +1,31 @@
 #include "../common.h"
 
+
 int main(int argc, char* argv[])
 {
-    CHECK(argc == 2, "debug_preload <txt_file>");
+    CHECK(argc == 2, "debug_sysv_perf <txt_file>");
+
+    debug_print_cgroup();
 
     const char* const file_path = argv[1];
 
     int shmkey;
+    uint32_t hugetlb_flags;
+    uint32_t step;
     if (strstr(file_path, "customer")) {
         shmkey = SHMKEY_TXT_CUSTOMER;
+        hugetlb_flags = SHM_HUGETLB | SHM_HUGE_2MB;
+        step = 1024 * 1024 * 2;
     }
     else if (strstr(file_path, "orders")) {
         shmkey = SHMKEY_TXT_ORDERS;
+        hugetlb_flags = SHM_HUGETLB | SHM_HUGE_2MB;
+        step = 1024 * 1024 * 2;
     }
     else if (strstr(file_path, "lineitem")) {
         shmkey = SHMKEY_TXT_LINEITEM;
+        hugetlb_flags = SHM_HUGETLB | SHM_HUGE_2MB;
+        step = 1024 * 1024 * 2;
     }
     else {
         PANIC("unknown file %s: customer? orders? lineitem?", file_path);
@@ -30,7 +41,7 @@ int main(int argc, char* argv[])
     const int shmid = C_CALL(shmget(
         shmkey,
         ctx.file_size,
-        IPC_CREAT | 0666 | SHM_NORESERVE | SHM_HUGETLB | SHM_HUGE_2MB));
+        0666 | hugetlb_flags));
     INFO("shmid: %d", shmid);
 
     void* const ptr = (uint8_t*)shmat(shmid, nullptr, 0);
@@ -38,27 +49,15 @@ int main(int argc, char* argv[])
     CHECK(ptr != (void*)-1,
         "shmat(shmid=0x%x) failed. errno = %d (%s)", shmid, errno, strerror(errno));
 
-    constexpr const uint64_t STEP = 1024 * 1024 * 1024;
-    uint64_t offset = 0;
-    while (offset < ctx.file_size) {
-        const size_t size = C_CALL(pread(
-            ctx.fd,
-            (void*)((uintptr_t)ptr + offset),
-            STEP,
-            offset));
-        CHECK(size <= STEP);
-        CHECK(size <= ctx.file_size - offset);
-        //__fadvice_dont_need(ctx.fd, offset, size);
-        offset += size;
-        INFO("pread() %lu bytes, totally %lu bytes", size, offset);
+    uint64_t dummy = 0;
+    for (uint64_t i = 0; i < ctx.file_size; i += step) {
+        dummy += ((uint8_t*)ptr)[i];
     }
-    INFO("pread() all %lu bytes done", ctx.file_size);
+    CHECK(dummy < (uint64_t)-1);
+    INFO("pre-faulting done");
 
     C_CALL(shmdt(ptr));
     INFO("shmdt() done");
-
-    //__fadvice_dont_need(ctx.fd, 0, ctx.file_size);
-    //INFO("__fadvice_dont_need() done");
 
     return 0;
 }

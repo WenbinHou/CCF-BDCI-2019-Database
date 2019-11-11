@@ -51,9 +51,9 @@ In `/etc/sysctl.conf`
 # Added by Wenbin Hou
 #==============================================================================
 
-# Allocate 1.6GB 2MB-hugepages
 # Pity that we cannot make use of 1GB-hugepages, due to the KVM virtualization
-vm.nr_hugepages = 800
+# Allocate some 2MB-hugepages
+#vm.nr_hugepages = 57709
 ````
 
 ---

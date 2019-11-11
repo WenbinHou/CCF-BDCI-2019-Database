@@ -33,7 +33,7 @@ bool __write_file_u64(const char* const path, const uint64_t value) noexcept
     const int size = snprintf(buffer, std::size(buffer), "%lu", value);
     CHECK(size > 0);
 
-    const size_t cnt = C_CALL(read(fd, buffer, size));
+    const size_t cnt = C_CALL(write(fd, buffer, size));
     CHECK(cnt == (size_t)size);
     C_CALL(close(fd));
 
@@ -72,18 +72,22 @@ bool __fincore(
 
 
 __always_inline
+#if ENABLE_SHM_CACHE_TXT
+void __open_file_read_direct(
+#else  // !ENABLE_SHM_CACHE_TXT
 void __open_file_read(
+#endif  // ENABLE_SHM_CACHE_TXT
     /*in*/ const char *const path,
     /*out*/ load_file_context *const ctx) noexcept
 {
     ASSERT(ctx->fd == -1, "fd should be initialized to -1 to prevent bugs");
-    ctx->fd = C_CALL(open(path, O_RDONLY | O_CLOEXEC));
+    ctx->fd = C_CALL(open(path, O_RDONLY | O_CLOEXEC | (ENABLE_SHM_CACHE_TXT ? O_DIRECT : 0)));
 
-    struct stat64 st;
+    struct stat64 st; // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init)
     C_CALL(fstat64(ctx->fd, &st));
     ctx->file_size = st.st_size;
 
-    DEBUG("__open_file_read() %s: fd = %d, size = %lu", path, ctx->fd, ctx->file_size);
+    DEBUG("__open_file_read_direct() %s: fd = %d, size = %lu", path, ctx->fd, ctx->file_size);
 }
 
 

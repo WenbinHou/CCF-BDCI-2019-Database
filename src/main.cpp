@@ -1,77 +1,96 @@
 #include "common.h"
 
-static void maybe_take_action_and_exit() noexcept
-{
-    const char* const action = getenv("__BDCI19_TAKE_ACTION");
-    if (__likely(action == nullptr)) {
-        return;
-    }
-
-    if (strcmp(action, ACTION_DROP_PAGE_CACHE) == 0) {
-        exit(mem_drop_cache() ? EXIT_SUCCESS : EXIT_FAILURE);
-    }
-
-    WARN("unknown action: %s (do nothing)", action);
-}
-
 
 static void detect_preparing_page_cache() noexcept
 {
-    constexpr const uint64_t FINCORE_TEST_SIZE = 1024 * 1024 * 2;  // Test 2MB
+    ASSERT(g_orders_file.file_size > 0);
+    ASSERT(g_customer_file.file_size > 0);
+    ASSERT(g_lineitem_file.file_size > 0);
 
-    void* const base_ptr = mmap_reserve_space(FINCORE_TEST_SIZE);
+    g_is_preparing_page_cache = true;
 
-    g_is_preparing_page_cache = !__fincore(
-        base_ptr,
-        g_customer_file.fd,
-        __align_down(g_customer_file.file_size - FINCORE_TEST_SIZE, PAGE_SIZE),
-        FINCORE_TEST_SIZE);
-    if (!g_is_preparing_page_cache) {
-        g_is_preparing_page_cache = !__fincore(
-            base_ptr,
-            g_customer_file.fd,
-            0,
-            FINCORE_TEST_SIZE);
+    const uint32_t nr_2mb = mem_get_nr_hugepages_2048kB();
+    DEBUG("nr_hugepages (2048kB): %u", nr_2mb);
+
+#if ENABLE_SHM_CACHE_TXT
+    const uint32_t require_nr_2mb =
+        __div_up(g_customer_file.file_size, 1024 * 1024 * 2) +
+        __div_up(g_orders_file.file_size, 1024 * 1024 * 2) +
+        __div_up(g_lineitem_file.file_size, 1024 * 1024 * 2) +
+        CONFIG_EXTRA_HUGE_PAGES;
+#else
+    const uint32_t require_nr_2mb = CONFIG_EXTRA_HUGE_PAGES;
+#endif
+    DEBUG("require_nr_2mb: %u", require_nr_2mb);
+
+    if (nr_2mb == require_nr_2mb) {
+        do {
+#if ENABLE_SHM_CACHE_TXT
+            if (!g_customer_shm.init_fixed(SHMKEY_TXT_CUSTOMER, g_customer_file.file_size, false)) {
+                break;
+            }
+            if (!g_orders_shm.init_fixed(SHMKEY_TXT_ORDERS, g_orders_file.file_size, false)) {
+                break;
+            }
+            if (!g_lineitem_shm.init_fixed(SHMKEY_TXT_LINEITEM, g_lineitem_file.file_size, false)) {
+                break;
+            }
+#else  // !ENABLE_SHM_CACHE_TXT
+            // Test are txt files in page cache?
+            const auto is_file_in_page_cache = [](const load_file_context& ctx) {
+                ASSERT(ctx.fd > 0);
+                ASSERT(ctx.file_size > 0);
+
+                constexpr const uint64_t CHECK_SIZE = 1048576;
+                void* const ptr = mmap_reserve_space(CHECK_SIZE);
+
+                bool result = false;
+                do {
+                    if (!__fincore(ptr, ctx.fd, 0, CHECK_SIZE)) {
+                        break;
+                    }
+                    if (!__fincore(ptr, ctx.fd, __align_down(ctx.file_size / 2, PAGE_SIZE), CHECK_SIZE)) {
+                        break;
+                    }
+                    if (!__fincore(ptr, ctx.fd, __align_down(ctx.file_size - CHECK_SIZE, PAGE_SIZE), CHECK_SIZE)) {
+                        break;
+                    }
+                    result = true;
+                } while(false);
+
+                C_CALL(munmap(ptr, CHECK_SIZE));
+                mmap_return_space(ptr, ctx.file_size);
+
+                return result;
+            };
+
+            if (!is_file_in_page_cache(g_customer_file)) break;
+            INFO("is_file_in_page_cache(g_customer_file): true");
+
+            if (!is_file_in_page_cache(g_orders_file)) break;
+            INFO("is_file_in_page_cache(g_orders_file): true");
+
+            if (!is_file_in_page_cache(g_lineitem_file)) break;
+            INFO("is_file_in_page_cache(g_lineitem_file): true");
+
+#endif  // ENABLE_SHM_CACHE_TXT
+            g_is_preparing_page_cache = false;
+        } while(false);
     }
-    INFO("fincore: customer_file -> %s", (g_is_preparing_page_cache ? "no" : "yes"));
-
-    if (!g_is_preparing_page_cache) {
-        g_is_preparing_page_cache = !__fincore(
-            base_ptr,
-            g_orders_file.fd,
-            __align_down(g_orders_file.file_size - FINCORE_TEST_SIZE, PAGE_SIZE),
-            FINCORE_TEST_SIZE);
-        if (!g_is_preparing_page_cache) {
-            g_is_preparing_page_cache = !__fincore(
-                base_ptr,
-                g_orders_file.fd,
-                0,
-                FINCORE_TEST_SIZE);
-        }
-        INFO("fincore: orders_file -> %s", (g_is_preparing_page_cache ? "no" : "yes"));
+    else {
+        DEBUG("nr_hugepages != require_nr_2mb (%u != %u)", nr_2mb, require_nr_2mb);
     }
-
-    if (!g_is_preparing_page_cache) {
-        g_is_preparing_page_cache = !__fincore(
-            base_ptr,
-            g_lineitem_file.fd,
-            __align_down(g_lineitem_file.file_size - FINCORE_TEST_SIZE, PAGE_SIZE),
-            FINCORE_TEST_SIZE);
-        if (!g_is_preparing_page_cache) {
-            g_is_preparing_page_cache = !__fincore(
-                base_ptr,
-                g_lineitem_file.fd,
-                0,
-                FINCORE_TEST_SIZE);
-        }
-        INFO("fincore: lineitem_file -> %s", (g_is_preparing_page_cache ? "no" : "yes"));
-    }
-
-    C_CALL(munmap(base_ptr, FINCORE_TEST_SIZE));
-
-    mmap_return_space(base_ptr, FINCORE_TEST_SIZE);
 
     INFO("g_is_preparing_page_cache: %d", (int)g_is_preparing_page_cache);
+
+    // TODO
+    if (g_is_preparing_page_cache) {
+#if ENABLE_SHM_CACHE_TXT
+        PANIC("TODO: preparing page cache not implemented yet!");
+#else
+        // Do nothing
+#endif
+    }
 }
 
 
@@ -190,11 +209,6 @@ int main(int argc, char* argv[])
     debug_print_cgroup();
 
     //
-    // Maybe take some action and then exit...
-    //
-    maybe_take_action_and_exit();
-
-    //
     // Initialize mapper
     //
     __mapper_initialize();
@@ -215,7 +229,7 @@ int main(int argc, char* argv[])
         else if (errno == ENOENT) {
             g_is_creating_index = true;
             DEBUG("index directory not found... now creating index");
-            C_CALL(mkdir(index_dir, 0755));
+            C_CALL(mkdir(index_dir, 0777));  // so we don't require sudo to `rm -rf index`
             g_index_directory_fd = C_CALL(open(index_dir, O_DIRECTORY | O_PATH | O_CLOEXEC));
         }
         else {
@@ -234,23 +248,15 @@ int main(int argc, char* argv[])
         const char* const orders_text_path = argv[2];
         const char* const lineitem_text_path = argv[3];
 
+#if ENABLE_SHM_CACHE_TXT
+        __open_file_read_direct(customer_text_path, &g_customer_file);
+        __open_file_read_direct(orders_text_path, &g_orders_file);
+        __open_file_read_direct(lineitem_text_path, &g_lineitem_file);
+#else
         __open_file_read(customer_text_path, &g_customer_file);
-        if (euidaccess(customer_text_path, W_OK) != 0) {
-            WARN("%s is not writeable by current process. mincore() will mal-function", customer_text_path);
-            WARN("please grant write permission to %s (although it will not be written)", customer_text_path);
-        }
-
         __open_file_read(orders_text_path, &g_orders_file);
-        if (euidaccess(orders_text_path, W_OK) != 0) {
-            WARN("%s is not writeable by current process. mincore() will mal-function", orders_text_path);
-            WARN("please grant write permission to %s (although it will not be written)", orders_text_path);
-        }
-
         __open_file_read(lineitem_text_path, &g_lineitem_file);
-        if (euidaccess(lineitem_text_path, W_OK) != 0) {
-            WARN("%s is not writeable by current process. mincore() will mal-function", lineitem_text_path);
-            WARN("please grant write permission to %s (although it will not be written)", lineitem_text_path);
-        }
+#endif
 
         detect_preparing_page_cache();
     }
@@ -317,6 +323,6 @@ int main(int argc, char* argv[])
         do_multi_thread();
     }
 
-
+    INFO("======== exit ========");
     return 0;
 }

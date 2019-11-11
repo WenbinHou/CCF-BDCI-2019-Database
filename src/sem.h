@@ -59,7 +59,7 @@ private:
                 // wake-up, or due to a change in the number of tokens.
                 // We retry in these cases.
                 // We simply don't allow other errors
-                CHECK(ret == 0 || errno == EAGAIN, "Unexpected errno: %d (%s)", errno, strerror(errno));
+                CHECK(ret == 0 || errno == EAGAIN, "Unexpected errno = %d (%s)", errno, strerror(errno));
 
                 // Relaxed MO is sufficient; see below
                 v = _value.load(std::memory_order_relaxed);

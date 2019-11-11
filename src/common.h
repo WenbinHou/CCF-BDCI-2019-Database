@@ -63,7 +63,63 @@ typedef uint64_t index64_t;
 //==============================================================================
 // Structures
 //==============================================================================
+template<typename T>
+struct posix_shm_t
+{
+public:
+    T* ptr = nullptr;
+    uint64_t size_in_byte = 0;
+    int shmid = -1;
 
+public:
+    __always_inline
+    bool init_fixed(const key_t shmkey, uint64_t size, bool try_create) noexcept
+    {
+        ASSERT(shmid < 0);
+        ASSERT(ptr == nullptr);
+        ASSERT(size_in_byte == 0);
+
+        shmid = shmget(
+            shmkey,
+            size,
+            0666 | SHM_HUGETLB | SHM_HUGE_2MB | (try_create ? IPC_CREAT : 0));
+        if (shmid < 0) {
+            WARN("shmget(shmkey=%d) failed. errno = %d (%s)", shmkey, errno, strerror(errno));
+            return false;
+        }
+        INFO("shmkey %d -> shmid %d", shmkey, shmid);
+
+        size_in_byte = size;
+        ptr = (T*)mmap_reserve_space(size);
+        return true;
+    }
+
+    __always_inline
+    void attach_fixed(const bool do_remove) noexcept
+    {
+        ASSERT(ptr != nullptr);
+        ASSERT(shmid >= 0);
+        void* const tmp_ptr = shmat(shmid, ptr, 0);
+        CHECK(tmp_ptr != (void*)-1, "shmat(shmid=0x%x) failed. errno = %d (%s)", shmid, errno, strerror(errno));
+
+        if (do_remove) {
+            C_CALL(shmctl(shmid, IPC_RMID, nullptr));
+        }
+
+        DEBUG("shmat(shmid=0x%x): %p", shmid, tmp_ptr);
+        ASSERT(ptr == tmp_ptr);
+    }
+
+    __always_inline
+    void detach() noexcept
+    {
+        ASSERT(ptr != nullptr);
+        C_CALL(shmdt(ptr));
+
+        DEBUG("shmdt(shmid=0x%x): %p", shmid, ptr);
+        ptr = nullptr;
+    }
+};
 
 //==============================================================================
 // Global Constants
@@ -75,6 +131,7 @@ typedef uint64_t index64_t;
 #define SHMKEY_TXT_LINEITEM         ((key_t)0x19491003)
 #define SHMKEY_CUSTKEY_TO_MKTID     ((key_t)0x19491004)
 #define SHMKEY_ORDERKEY_TO_ORDER    ((key_t)0x19491005)
+#define SHMKEY_ORDERKEY_TO_CUSTKEY  ((key_t)0x19491006)
 
 //==============================================================================
 // Global Variables
@@ -89,6 +146,8 @@ public:
     std::atomic_uint64_t orders_file_shared_offset { 0 };
     std::atomic_uint64_t lineitem_file_shared_offset { 0 };
 
+    std::atomic_uint64_t orderkey_custkey_shared_counter { 0 };
+
     sync_barrier loader_sync_barrier { };
     sync_barrier worker_sync_barrier { };
 
@@ -98,6 +157,17 @@ public:
         char name[12];
     } all_mktsegments[8] { };  // only used in create_index
     pthread_mutex<process_shared> all_mktsegments_insert_mutex { };  // only used in create_index
+
+    uint32_t total_buckets = 0;
+    uint32_t buckets_per_holder = 0;
+
+    std::atomic_uint64_t next_truncate_holder_1_id { 0 };
+    std::atomic_uint64_t next_truncate_holder_2_id { 0 };
+
+    pthread_mutex<process_shared> meta_update_mutex { };
+    struct {
+        uint32_t max_shipdate_orderdate_diff = 0;
+    } meta { };
 
     bool sched_fifo_failed { false };
 #if ENABLE_ASSERTION
@@ -111,6 +181,12 @@ inline uint32_t g_active_cpu_cores = 0;  // number of CPU cores
 inline uint32_t g_total_process_count = 0;  // process or thread count
 inline uint32_t g_id = 0;
 
+#if ENABLE_SHM_CACHE_TXT
+inline posix_shm_t<char> g_customer_shm { };
+inline posix_shm_t<char> g_orders_shm { };
+inline posix_shm_t<char> g_lineitem_shm { };
+#endif
+
 inline load_file_context g_customer_file { };
 inline load_file_context g_orders_file { };
 inline load_file_context g_lineitem_file { };
@@ -121,6 +197,13 @@ inline bool g_is_preparing_page_cache = true;
 
 inline uint32_t g_query_count = 0;
 inline const char* const* g_argv_queries = nullptr;
+
+constexpr const uint32_t BUCKETS_PER_MKTID = __div_up((MAX_TABLE_DATE - MIN_TABLE_DATE + 1), CONFIG_ORDERDATES_PER_BUCKET);
+
+inline load_file_context g_endoffset_file_1 { };
+inline load_file_context g_endoffset_file_2 { };
+inline int g_holder_files_1_fd[CONFIG_INDEX_HOLDER_COUNT] { };
+inline int g_holder_files_2_fd[CONFIG_INDEX_HOLDER_COUNT] { };
 
 
 
@@ -147,6 +230,23 @@ void use_index_initialize_after_fork() noexcept;
 //==============================================================================
 // Very common routines
 //==============================================================================
+__always_inline
+uint32_t calc_bucket_index(const uint8_t mktid, const date_t orderdate) noexcept
+{
+    ASSERT(g_shared->mktid_count > 0);
+    ASSERT(mktid < g_shared->mktid_count);
+    ASSERT(orderdate >= MIN_TABLE_DATE);
+    ASSERT(orderdate <= MAX_TABLE_DATE);
+
+    return (uint32_t)(mktid - 0) * BUCKETS_PER_MKTID + (orderdate - MIN_TABLE_DATE) / CONFIG_ORDERDATES_PER_BUCKET;
+}
+
+__always_inline
+date_t calc_base_orderdate(const date_t orderdate) noexcept
+{
+    return __align_down((orderdate - MIN_TABLE_DATE), CONFIG_ORDERDATES_PER_BUCKET) + MIN_TABLE_DATE;
+}
+
 __always_inline
 void pin_thread_to_cpu_core(const uint32_t core) noexcept
 {
