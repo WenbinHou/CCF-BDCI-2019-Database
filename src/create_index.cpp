@@ -475,6 +475,7 @@ static void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid)
 
                         g_shared->total_buckets = g_shared->mktid_count * BUCKETS_PER_MKTID;
                         g_shared->buckets_per_holder = __div_up(g_shared->total_buckets, CONFIG_INDEX_HOLDER_COUNT);
+                        g_shared->total_plates = g_shared->mktid_count * PLATES_PER_MKTID;
                     }
                 }
             }
@@ -610,6 +611,7 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
             ++p;  // skip '|'
             ASSERT(custkey >= 1);
             ASSERT(custkey <= g_max_custkey, "Unexpected custkey (too large): %u", custkey);
+            ASSERT(g_orderkey_to_custkey.ptr[orderkey] == 0);
             g_orderkey_to_custkey.ptr[orderkey] = custkey;
 
             const date_t orderdate = date_from_string<true>(p);
@@ -672,13 +674,13 @@ static void worker_load_orders_custkey_from_orderkey(
 
             uint8_t mktid;
             if (custkey % 3 == 1) {
-                mktid = mktid_embed % 5;
+                mktid = mktid_embed / 25;
             }
             else if (custkey % 3 == 2) {
                 mktid = (mktid_embed / 5) % 5;
             }
             else {  // custkey % 3 == 0
-                mktid = mktid_embed / 25;
+                mktid = mktid_embed % 5;
             }
             ASSERT(mktid < 5, "Boom! mktid %u too large", mktid);
             ASSERT(mktid < g_shared->mktid_count,
@@ -754,8 +756,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
     uint32_t max_orderdate_shipdate_diff = 0;
 
-
+    //
     // Allocate for g_items_buffer_1_start_ptr, g_items_buffer_2_start_ptr
+    //
     {
         ASSERT(g_shared->total_buckets > 0);
         const uint64_t index_tls_buffer_count =
@@ -808,7 +811,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
         DEBUG("[%u] g_buckets_endoffset_2: %p", tid, g_buckets_endoffset_2);
     }
 
+    //
     // Truncate for holder files
+    //
     {
         ASSERT(g_shared->buckets_per_holder > 0);
 
@@ -1040,7 +1045,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
             ASSERT(mktid < mktid_count, "BUG: expect mktid < mktid_count (%u < %u)", mktid, mktid_count);
 
-            last_bucket_base_orderdate = calc_base_orderdate(last_orderdate);
+            last_bucket_base_orderdate = calc_bucket_base_orderdate(last_orderdate);
             ASSERT(last_orderdate >= last_bucket_base_orderdate);
             ASSERT(last_orderdate < last_bucket_base_orderdate + CONFIG_ORDERDATES_PER_BUCKET);
             //last_orderkey_with_orderdate_diff = last_orderkey | (uint32_t)(last_orderdate - last_bucket_base_orderdate) << 30;
@@ -1154,7 +1159,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 const uint8_t mktid = last_order.mktid;
                 ASSERT(mktid < mktid_count, "BUG: expect mktid < mktid_count (%u < %u)", mktid, mktid_count);
 
-                last_bucket_base_orderdate = calc_base_orderdate(last_orderdate);
+                last_bucket_base_orderdate = calc_bucket_base_orderdate(last_orderdate);
                 ASSERT(last_orderdate >= last_bucket_base_orderdate);
                 ASSERT(last_orderdate < last_bucket_base_orderdate + CONFIG_ORDERDATES_PER_BUCKET);
                 //last_orderkey_with_orderdate_diff = last_orderkey | (uint32_t)(last_orderdate - last_bucket_base_orderdate) << 30;
@@ -1238,6 +1243,272 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     INFO("[%u] done worker_load_lineitem_multi_part()", tid);
 }
 
+
+__always_inline
+void worker_compute_pretopn_for_plate(
+    /*in*/ const date_t bucket_base_orderdate_minus_plate_base_orderdate,
+    /*in*/ const void* const bucket_ptr_1,
+    /*in*/ const uint64_t bucket_size_1,
+    /*inout*/ uint32_t& topn_count,
+    /*inout*/ uint64_t* const topn_ptr) noexcept
+{
+    ASSERT(bucket_base_orderdate_minus_plate_base_orderdate >= 0);
+    ASSERT(bucket_base_orderdate_minus_plate_base_orderdate % CONFIG_ORDERDATES_PER_BUCKET == 0);
+    ASSERT((uint32_t)bucket_base_orderdate_minus_plate_base_orderdate < CONFIG_ORDERDATES_PER_BUCKET * BUCKETS_PER_PLATE);
+    ASSERT(bucket_ptr_1 != nullptr);
+    ASSERT((uintptr_t)bucket_ptr_1 % PAGE_SIZE == 0);
+    ASSERT(bucket_size_1 > 0);
+    ASSERT(bucket_size_1 % (sizeof(uint32_t) * 8) == 0);
+    ASSERT(topn_count <= CONFIG_EXPECT_MAX_TOPN);
+    ASSERT(topn_ptr != nullptr);
+    ASSERT((uintptr_t)topn_ptr % PAGE_SIZE == 0);
+
+#if ENABLE_ASSERTION
+    {
+        const uint32_t* p = (const uint32_t*)bucket_ptr_1;
+        const uint32_t* const end = (const uint32_t*)((uintptr_t)p + bucket_size_1);
+        while (p < end) {
+            const uint32_t orderkey = *p & ~0xC0000000U;
+            p += 8;
+
+            ASSERT(orderkey > 0, "bucket_id=%%u, bucket_size_1=%lu, offset=%lu",
+            /*bucket_id,*/ bucket_size_1, (end - p) * sizeof(uint32_t));
+        }
+    }
+#endif
+
+    const __m256i expend_mask = _mm256_set_epi32(
+        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00000000);
+
+    const uint32_t* p = (const uint32_t*)bucket_ptr_1;
+    const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr_1 + bucket_size_1);
+    const uint32_t* const end_align32 = p + __align_down(bucket_size_1 / sizeof(uint32_t), 32);
+    ASSERT((uintptr_t)p % 32 == 0);
+    ASSERT((uintptr_t)end_align32 % 32 == 0);
+    ASSERT(end_align32 <= end);
+
+
+#define _CHECK_RESULT(N) \
+        do { \
+            ASSERT(orderkey##N > 0, ""); \
+            ASSERT(orderkey##N <= g_max_orderkey, "orderkey" #N " too large: %u", orderkey##N); \
+            ASSERT(total_expend_cent##N > 0, "orderkey" #N ": %u", orderkey##N); \
+            ASSERT(total_expend_cent##N < (1U << 28)); \
+            ASSERT(plate_orderdate_diff##N >= 0); \
+            ASSERT(plate_orderdate_diff##N < (1 << 6)); \
+            const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(plate_orderdate_diff##N) << 30 | orderkey##N; \
+            \
+            if (topn_count < CONFIG_EXPECT_MAX_TOPN) { \
+                topn_ptr[topn_count++] = value; \
+                if (__unlikely(topn_count == CONFIG_EXPECT_MAX_TOPN)) { \
+                    std::make_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                } \
+            } \
+            else { \
+                if (value > topn_ptr[0]) { \
+                    std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                    topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value; \
+                    std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                } \
+            } \
+        } while(false)
+
+    while (p < end_align32) {
+        const uint32_t orderkey1 = *p & ~0xC0000000U;
+        ASSERT(orderkey1 > 0);
+        const uint32_t bucket_orderdate_diff1 = *p >> 30;
+        const date_t plate_orderdate_diff1 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff1;
+        const __m256i items1 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        p += 8;
+
+        const uint32_t orderkey2 = *p & ~0xC0000000U;
+        ASSERT(orderkey2 > 0);
+        const uint32_t bucket_orderdate_diff2 = *p >> 30;
+        const date_t plate_orderdate_diff2 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff2;
+        const __m256i items2 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        p += 8;
+
+        const uint32_t orderkey3 = *p & ~0xC0000000U;
+        ASSERT(orderkey3 > 0);
+        const uint32_t bucket_orderdate_diff3 = *p >> 30;
+        const date_t plate_orderdate_diff3 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff3;
+        const __m256i items3 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        p += 8;
+
+        const uint32_t orderkey4 = *p & ~0xC0000000U;
+        ASSERT(orderkey4 > 0);
+        const uint32_t bucket_orderdate_diff4 = *p >> 30;
+        const date_t plate_orderdate_diff4 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff4;
+        const __m256i items4 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        p += 8;
+
+        // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
+        const __m256i tmp1 = _mm256_hadd_epi32(items1, items2);
+        const __m256i tmp2 = _mm256_hadd_epi32(items3, items4);
+        const __m256i tmp3 = _mm256_hadd_epi32(tmp1, tmp2);
+        const __m128i tmp3lo = _mm256_castsi256_si128(tmp3);
+        const __m128i tmp3hi = _mm256_extracti128_si256(tmp3, 1);
+        const __m128i sum = _mm_add_epi32(tmp3hi, tmp3lo);
+
+        const uint32_t total_expend_cent1 = _mm_extract_epi32(sum, 0);
+        const uint32_t total_expend_cent2 = _mm_extract_epi32(sum, 1);
+        const uint32_t total_expend_cent3 = _mm_extract_epi32(sum, 2);
+        const uint32_t total_expend_cent4 = _mm_extract_epi32(sum, 3);
+
+        _CHECK_RESULT(1);
+        _CHECK_RESULT(2);
+        _CHECK_RESULT(3);
+        _CHECK_RESULT(4);
+    }
+
+    ASSERT(p == end_align32);
+    while (p < end) {
+        const uint32_t orderkey = *p & ~0xC0000000U;
+        ASSERT(orderkey > 0);
+        const uint32_t bucket_orderdate_diff = *p >> 30;
+        const date_t plate_orderdate_diff = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff;
+        const __m256i items = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        p += 8;
+
+        __m256i sum = _mm256_hadd_epi32(items, items);
+        sum = _mm256_hadd_epi32(sum, sum);
+        const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
+        ASSERT(total_expend_cent > 0);
+
+        _CHECK_RESULT();
+
+#undef _CHECK_RESULT
+    }
+}
+
+
+static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
+{
+    // Truncate for pretopn, pretopn_count
+    {
+        ASSERT(g_shared->total_plates > 0);
+
+        ASSERT(g_pretopn_file.fd > 0);
+        ASSERT(g_pretopn_count_file.fd > 0);
+
+        static_assert(sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN % PAGE_SIZE == 0);
+        g_pretopn_file.file_size = sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN * g_shared->total_plates;
+        g_pretopn_count_file.file_size = sizeof(uint32_t) * g_shared->total_plates;
+        ASSERT(g_pretopn_file.file_size > 0);
+        ASSERT(g_pretopn_count_file.file_size > 0);
+
+        g_shared->worker_sync_barrier.run_once_and_sync([]() {
+            C_CALL(ftruncate(g_pretopn_file.fd, g_pretopn_file.file_size));
+            C_CALL(ftruncate(g_pretopn_count_file.fd, g_pretopn_count_file.file_size));
+
+            INFO("g_pretopn_file.file_size: %lu", g_pretopn_file.file_size);
+            INFO("g_pretopn_count_file.file_size: %lu", g_pretopn_count_file.file_size);
+
+            ASSERT(g_shared->pretopn_plate_id_shared_counter.load() == 0);
+        });
+
+        g_pretopn_start_ptr = (uint64_t*)my_mmap(
+            g_pretopn_file.file_size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE,
+            g_pretopn_file.fd,
+            0);
+        DEBUG("[%u] g_pretopn_start_ptr: %p", tid, g_pretopn_start_ptr);
+
+        g_pretopn_count_start_ptr = (uint32_t*)my_mmap(
+            g_pretopn_count_file.file_size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE,
+            g_pretopn_count_file.fd,
+            0);
+        DEBUG("[%u] g_pretopn_count_start_ptr: %p", tid, g_pretopn_count_start_ptr);
+    }
+
+
+    void* const ptr = mmap_reserve_space(CONFIG_INDEX_SPARSE_BUCKET_SIZE_1);
+
+    // For each bucket, write remaining buffer (if exists) to file
+    uint32_t plate_ids_to_shuffle[g_shared->total_plates];
+    for (uint32_t i = 0; i < g_shared->total_plates; ++i) {
+        plate_ids_to_shuffle[i] = i;
+    }
+    std::mt19937 g(0xdeedbeef); // NOLINT(cert-msc32-c)
+    std::shuffle(plate_ids_to_shuffle, plate_ids_to_shuffle + g_shared->total_plates, g);
+
+    while (true) {
+        const uint32_t plate_id_index = g_shared->pretopn_plate_id_shared_counter++;
+        if (__unlikely(plate_id_index >= g_shared->total_plates)) break;
+        const uint32_t plate_id = plate_ids_to_shuffle[plate_id_index];
+        TRACE("pretopn for plate_id: %u", plate_id);
+
+        const uint32_t plate_base_bucket_id = calc_plate_base_bucket_id_by_plate_id(plate_id);
+        const uint32_t base_mktid = calc_bucket_mktid(plate_base_bucket_id);
+
+        const date_t bucket_base_orderdate = calc_bucket_base_orderdate_by_bucket_id(plate_base_bucket_id);
+        const date_t plate_base_orderdate = calc_plate_base_orderdate_by_plate_id(plate_id);
+        ASSERT((plate_base_orderdate - MIN_TABLE_DATE) % CONFIG_TOPN_DATES_PER_PLATE == 0);
+        ASSERT(bucket_base_orderdate >= plate_base_orderdate);
+        ASSERT(bucket_base_orderdate < plate_base_orderdate + CONFIG_TOPN_DATES_PER_PLATE);
+        ASSERT((bucket_base_orderdate - plate_base_orderdate) % CONFIG_ORDERDATES_PER_BUCKET == 0);
+
+        uint32_t& topn_count = g_pretopn_count_start_ptr[plate_id];
+        uint64_t* topn_ptr = g_pretopn_start_ptr + (uint64_t)plate_id * CONFIG_EXPECT_MAX_TOPN;
+
+        for (uint32_t bucket_id = plate_base_bucket_id; bucket_id < plate_base_bucket_id + BUCKETS_PER_PLATE; ++bucket_id) {
+            if (calc_bucket_mktid(bucket_id) != base_mktid) break;
+            TRACE("pretopn for bucket_id: %u", bucket_id);
+
+#if ENABLE_ASSERTION
+            ASSERT(calc_plate_id(bucket_id) == plate_id);
+#endif
+
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
+            const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_1 = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_1 * (bucket_id - begin_bucket_id);
+            const uint64_t bucket_size_1 = g_buckets_endoffset_1[bucket_id] - bucket_start_offset_1;
+            if (__unlikely(bucket_size_1 == 0)) continue;
+
+            void* const mapped_ptr = mmap(
+                ptr,
+                bucket_size_1,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_1_fd[holder_id],
+                bucket_start_offset_1);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == ptr);
+
+#if ENABLE_ASSERTION
+            const uint32_t* p = (uint32_t*)ptr;
+            const uint32_t* end = (uint32_t*)((uintptr_t)p + bucket_size_1);
+            while (p < end) {
+                const uint32_t orderkey = *p & ~0xC0000000U;
+                p += 8;
+
+                ASSERT(orderkey > 0, "bucket_id=%u, bucket_size_1=%lu, offset=%lu",
+                    bucket_id, bucket_size_1, (end - p) * sizeof(uint32_t));
+            }
+#endif
+
+            worker_compute_pretopn_for_plate(
+                (bucket_base_orderdate - plate_base_orderdate),
+                (const uint32_t*)ptr,
+                bucket_size_1,
+                topn_count,
+                topn_ptr);
+        }
+
+        std::sort(topn_ptr, topn_ptr + topn_count, std::greater<>());
+    }
+
+    C_CALL(munmap(ptr, CONFIG_INDEX_SPARSE_BUCKET_SIZE_1));
+    mmap_return_space(ptr, CONFIG_INDEX_SPARSE_BUCKET_SIZE_1);
+
+    INFO("[%u] done worker_compute_pretopn()", tid);
+}
 
 
 void fn_worker_thread_create_index(const uint32_t tid) noexcept
@@ -1333,10 +1604,8 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
     // Parse loaded lineitem table
     {
         worker_load_lineitem_multi_part(tid);
-        g_shared->worker_sync_barrier.sync();  // TODO: comment this out?
 
-#if ENABLE_ASSERTION
-        if (tid == 0) {
+        g_shared->worker_sync_barrier.sync_and_run_once([]() {
             uint64_t max_bucket_size_1 = 0;
             uint64_t max_bucket_size_2 = 0;
 
@@ -1362,9 +1631,291 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
 
             ASSERT(max_bucket_size_1 < CONFIG_INDEX_SPARSE_BUCKET_SIZE_1);
             ASSERT(max_bucket_size_2 < CONFIG_INDEX_SPARSE_BUCKET_SIZE_2);
-        }
-#endif
+
+            g_shared->meta.max_bucket_size_1 = max_bucket_size_1;
+            g_shared->meta.max_bucket_size_2 = max_bucket_size_2;
+
+
+            //
+            // Save meta to file
+            //
+            {
+                const int fd = C_CALL(openat(
+                    g_index_directory_fd,
+                    "meta",
+                    O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
+                    0666));
+                const size_t cnt = C_CALL(pwrite(
+                    fd,
+                    &g_shared->meta,
+                    sizeof(g_shared->meta),
+                    0));
+                CHECK(cnt == sizeof(g_shared->meta));
+                C_CALL(close(fd));
+            }
+        });
     }
+
+
+    // Create pretopn
+    {
+        worker_compute_pretopn(tid);
+        g_shared->worker_sync_barrier.sync();
+    }
+
+
+    //
+    // Test query
+    //
+#if ENABLE_ASSERTION
+    if (tid == 0) {
+        struct query_result_t {
+            date_t orderdate;
+            uint32_t orderkey;
+            uint32_t total_expend_cent;
+
+            __always_inline
+            bool operator >(const query_result_t& other) const noexcept {
+                if (total_expend_cent > other.total_expend_cent) return true;
+                if (total_expend_cent < other.total_expend_cent) return false;
+                return (orderkey > other.orderkey);
+            }
+        };
+
+        constexpr const uint32_t TOPN = 5;
+        std::vector<query_result_t> results;
+        results.reserve(TOPN);
+
+        uint32_t mktid;
+        for (mktid = 0; mktid < g_shared->mktid_count; ++mktid) {
+            if (std::string_view(g_shared->all_mktsegments[mktid].name, g_shared->all_mktsegments[mktid].length) == "BUILDING") {
+                break;
+            }
+        }
+        CHECK(mktid < g_shared->mktid_count);
+
+        const date_t q_orderdate = date_from_string<false>("1998-08-02");
+        const date_t q_shipdate = date_from_string<false>("1992-01-02");
+
+        uint32_t* const ptr = (uint32_t*)mmap_reserve_space(1048576 * 64);
+        for (date_t scan_orderdate = MIN_TABLE_DATE; scan_orderdate < q_orderdate; ++scan_orderdate) {
+            const date_t base_orderdate = calc_bucket_base_orderdate(scan_orderdate);
+            if (scan_orderdate != base_orderdate) continue;
+
+            const uint32_t bucket_id = calc_bucket_index(mktid, base_orderdate);
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_1 = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_1 * (bucket_id - begin_bucket_id);
+            const uint64_t bucket_size_1 = g_buckets_endoffset_1[bucket_id] - bucket_start_offset_1;
+            if (bucket_size_1 == 0) continue;
+
+            void* const mapped_ptr = mmap(
+                ptr,
+                bucket_size_1,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_1_fd[holder_id],
+                bucket_start_offset_1);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == ptr);
+
+            ASSERT(bucket_size_1 % (8 * sizeof(uint32_t)) == 0);
+
+            const __m256i expend_mask = _mm256_set_epi32(
+                0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+                0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00000000);
+            __m256i greater_than_value;
+            if (base_orderdate > q_shipdate) {
+                greater_than_value = _mm256_set1_epi32(0);  // TODO: dummy. remove!
+            }
+            else if (q_shipdate - base_orderdate >= 128) {
+                greater_than_value = _mm256_set1_epi32(0x7FFFFFFF);  // TODO: dummy. remove!
+            }
+            else {  // base_orderdate <= q_shipdate < base_orderdate + 128
+                greater_than_value = _mm256_set1_epi32((q_shipdate - base_orderdate) << 24);  // TODO: dummy. remove!
+            }
+
+            uint32_t* p = ptr;
+            const uint32_t* const end = (uint32_t*)((uintptr_t)ptr + bucket_size_1);
+            const uint32_t* const end_align32 = p + __align_down(bucket_size_1 / sizeof(uint32_t), 32);
+            while (p < end_align32) {
+                const uint32_t orderdate_diff1 = *p >> 30;
+                const date_t orderdate1 = base_orderdate + orderdate_diff1;
+                const uint32_t orderkey1 = *p & ~0xC0000000U;
+                __m256i items1 = _mm256_load_si256((__m256i*)p);
+                p += 8;
+                const __m256i gt_mask1 = _mm256_cmpgt_epi32(items1, greater_than_value);
+                items1 = _mm256_and_si256(items1, gt_mask1);
+                items1 = _mm256_and_si256(items1, expend_mask);
+
+                const uint32_t orderdate_diff2 = *p >> 30;
+                const date_t orderdate2 = base_orderdate + orderdate_diff2;
+                const uint32_t orderkey2 = *p & ~0xC0000000U;
+                __m256i items2 = _mm256_load_si256((__m256i*)p);
+                p += 8;
+                const __m256i gt_mask2 = _mm256_cmpgt_epi32(items2, greater_than_value);
+                items2 = _mm256_and_si256(items2, gt_mask2);
+                items2 = _mm256_and_si256(items2, expend_mask);
+
+                const uint32_t orderdate_diff3 = *p >> 30;
+                const date_t orderdate3 = base_orderdate + orderdate_diff3;
+                const uint32_t orderkey3 = *p & ~0xC0000000U;
+                __m256i items3 = _mm256_load_si256((__m256i*)p);
+                p += 8;
+                const __m256i gt_mask3 = _mm256_cmpgt_epi32(items3, greater_than_value);
+                items3 = _mm256_and_si256(items3, gt_mask3);
+                items3 = _mm256_and_si256(items3, expend_mask);
+
+                const uint32_t orderdate_diff4 = *p >> 30;
+                const date_t orderdate4 = base_orderdate + orderdate_diff4;
+                const uint32_t orderkey4 = *p & ~0xC0000000U;
+                __m256i items4 = _mm256_load_si256((__m256i*)p);
+                p += 8;
+                const __m256i gt_mask4 = _mm256_cmpgt_epi32(items4, greater_than_value);
+                items4 = _mm256_and_si256(items4, gt_mask4);
+                items4 = _mm256_and_si256(items4, expend_mask);
+
+                // TODO: looks for better way!
+                // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
+                const __m256i tmp1 = _mm256_hadd_epi32(items1, items2);
+                const __m256i tmp2 = _mm256_hadd_epi32(items3, items4);
+                const __m256i tmp3 = _mm256_hadd_epi32(tmp1, tmp2);
+                const __m128i tmp3lo = _mm256_castsi256_si128(tmp3);
+                const __m128i tmp3hi = _mm256_extracti128_si256(tmp3, 1);
+                const __m128i sum = _mm_add_epi32(tmp3hi, tmp3lo);
+
+                const uint32_t total_expend_cent1 = _mm_extract_epi32(sum, 0);
+                const uint32_t total_expend_cent2 = _mm_extract_epi32(sum, 1);
+                const uint32_t total_expend_cent3 = _mm_extract_epi32(sum, 2);
+                const uint32_t total_expend_cent4 = _mm_extract_epi32(sum, 3);
+
+#define _CHECK_RESULT(N) \
+                if (total_expend_cent##N > 0) { \
+                    query_result_t tmp; \
+                    tmp.orderdate = orderdate##N; \
+                    tmp.orderkey = orderkey##N; \
+                    tmp.total_expend_cent = total_expend_cent##N; \
+                    \
+                    if (results.size() < TOPN) { \
+                        results.emplace_back(std::move(tmp)); \
+                        if (__unlikely(results.size() == TOPN)) { \
+                            std::make_heap(results.begin(), results.end(), std::greater<>()); \
+                        } \
+                    } \
+                    else { \
+                        if (tmp > *results.begin()) { \
+                            std::pop_heap(results.begin(), results.end(), std::greater<>()); \
+                            *results.rbegin() = tmp; \
+                            std::push_heap(results.begin(), results.end(), std::greater<>()); \
+                        } \
+                    } \
+                }
+
+                _CHECK_RESULT(1)
+                _CHECK_RESULT(2)
+                _CHECK_RESULT(3)
+                _CHECK_RESULT(4)
+#undef _CHECK_RESULT
+            }
+
+
+            while (p < end) {
+                const uint32_t orderdate_diff = *p >> 30;
+                const date_t orderdate = base_orderdate + orderdate_diff;
+                const uint32_t orderkey = *p & ~0xC0000000U;
+
+                __m256i items = _mm256_load_si256((__m256i*)p);
+                p += 8;
+
+                const __m256i gt_mask = _mm256_cmpgt_epi32(items, greater_than_value);
+                if (_mm256_testz_si256(gt_mask, gt_mask)) continue;
+
+                items = _mm256_and_si256(items, gt_mask);
+                items = _mm256_and_si256(items, expend_mask);
+
+                // TODO: looks for better way!
+                // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
+                __m256i sum = _mm256_hadd_epi32(items, items);
+                sum = _mm256_hadd_epi32(sum, sum);
+                const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
+                ASSERT(total_expend_cent > 0);
+
+                query_result_t tmp;
+                tmp.orderdate = orderdate;
+                tmp.orderkey = orderkey;
+                tmp.total_expend_cent = total_expend_cent;
+
+                if (results.size() < TOPN) {
+                    results.emplace_back(std::move(tmp));
+                    if (__unlikely(results.size() == TOPN)) {
+                        std::make_heap(results.begin(), results.end(), std::greater<>());
+                    }
+                }
+                else {
+                    if (tmp > *results.begin()) {
+                        std::pop_heap(results.begin(), results.end(), std::greater<>());
+                        *results.rbegin() = tmp;
+                        std::push_heap(results.begin(), results.end(), std::greater<>());
+                    }
+                }
+            }
+//
+//            uint32_t* p = ptr;
+//            uint32_t* end = (uint32_t*)((uintptr_t)ptr + bucket_size_1);
+//            while (p < end) {
+//                const uint32_t orderdate_diff = *p >> 30;
+//                const date_t orderdate = base_orderdate + orderdate_diff;
+//                const uint32_t orderkey = *p & ~0xC0000000U;
+//
+//                __m256i items = _mm256_load_si256((__m256i*)p);
+//                p += 8;
+//
+//                const __m256i gt_mask = _mm256_cmpgt_epi32(items, greater_than_value);
+//                if (_mm256_testz_si256(gt_mask, gt_mask)) continue;
+//
+//                items = _mm256_and_si256(items, gt_mask);
+//                items = _mm256_and_si256(items, expend_mask);
+//
+//                // TODO: looks for better way!
+//                // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
+//                __m256i sum = _mm256_hadd_epi32(items, items);
+//                sum = _mm256_hadd_epi32(sum, sum);
+//                const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
+//                ASSERT(total_expend_cent > 0);
+//
+//                query_result_t tmp;
+//                tmp.orderdate = orderdate;
+//                tmp.orderkey = orderkey;
+//                tmp.total_expend_cent = total_expend_cent;
+//
+//                if (results.size() < TOPN) {
+//                    results.emplace_back(std::move(tmp));
+//                    if (__unlikely(results.size() == TOPN)) {
+//                        std::make_heap(results.begin(), results.end(), std::greater<>());
+//                    }
+//                }
+//                else {
+//                    if (tmp > *results.begin()) {
+//                        std::pop_heap(results.begin(), results.end(), std::greater<>());
+//                        *results.rbegin() = tmp;
+//                        std::push_heap(results.begin(), results.end(), std::greater<>());
+//                    }
+//                }
+//            }
+        }
+
+        std::sort(results.begin(), results.end(), std::greater<>());
+//        for (const auto& r : results) {
+//            const uint32_t print_orderkey = ((r.orderkey & ~0b111) << 2) | (r.orderkey & 0b111);
+//            const uint32_t year = date_get_year(r.orderdate);
+//            const uint32_t month = date_get_month(r.orderdate);
+//            const uint32_t day = date_get_day(r.orderdate);
+//            INFO("%u|%04u-%02u-%02u|%u.%02u", print_orderkey, year, month, day, r.total_expend_cent / 100, r.total_expend_cent % 100);
+//        }
+    }
+#endif  // ENABLE_ASSERTION
+
 }
 
 
@@ -1386,14 +1937,14 @@ void create_index_initialize_before_fork() noexcept
             g_holder_files_1_fd[holder_id] = C_CALL(openat(
                 g_index_directory_fd,
                 filename,
-                O_WRONLY | O_CLOEXEC | O_CREAT | O_EXCL,
+                O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
                 0666));
 
             snprintf(filename, std::size(filename), "holder2_%04u", holder_id);
             g_holder_files_2_fd[holder_id] = C_CALL(openat(
                 g_index_directory_fd,
                 filename,
-                O_WRONLY | O_CLOEXEC | O_CREAT | O_EXCL,
+                O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
                 0666));
         }
 
@@ -1412,16 +1963,37 @@ void create_index_initialize_before_fork() noexcept
 
 
     //
+    // Open pretopn file & pretopn_count
+    //
+    {
+        g_pretopn_file.fd = C_CALL(openat(
+            g_index_directory_fd,
+            "pretopn",
+            O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
+            0666));
+
+        g_pretopn_count_file.fd = C_CALL(openat(
+            g_index_directory_fd,
+            "pretopn_count",
+            O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
+            0666));
+    }
+
+
+    //
     // Calculate g_max_custkey
     //
-    g_max_custkey = 75000000;
-    if (false) {  // TODO
-        char buffer[PAGE_SIZE * 2];
+#if ENABLE_SHM_CACHE_TXT
+    PANIC("TODO! Get g_max_custkey");
+
+#else
+    {
+        char buffer[PAGE_SIZE];
         C_CALL(pread(
             g_customer_file.fd,
             buffer,
             std::size(buffer),
-            __align_down(g_customer_file.file_size, PAGE_SIZE) - PAGE_SIZE));
+            g_customer_file.file_size - PAGE_SIZE));
         const char* p = &buffer[std::size(buffer) - 1];
         while (*(p - 1) != '\n') --p;
         g_max_custkey = 0;
@@ -1432,17 +2004,23 @@ void create_index_initialize_before_fork() noexcept
         }
         INFO("g_max_custkey: %u", g_max_custkey);
     }
+#endif
 
 
+    //
     // Calculate g_max_orderkey
-    g_max_orderkey = 750000000;
-    if (false) {  // TODO
-        char buffer[PAGE_SIZE * 2];
+    //
+#if ENABLE_SHM_CACHE_TXT
+    PANIC("TODO! Get g_max_orderkey");
+
+#else
+    {
+        char buffer[PAGE_SIZE];
         C_CALL(pread(
             g_orders_file.fd,
             buffer,
             std::size(buffer),
-            __align_down(g_orders_file.file_size, PAGE_SIZE) - PAGE_SIZE));
+            g_orders_file.file_size - PAGE_SIZE));
         const char* p = &buffer[std::size(buffer) - 1];
         while (*(p - 1) != '\n') --p;
         g_max_orderkey = 0;
@@ -1455,6 +2033,7 @@ void create_index_initialize_before_fork() noexcept
         g_max_orderkey = (g_max_orderkey & 0b111) | ((g_max_orderkey >> 2) & ~0b1);
         INFO("g_max_orderkey: %u", g_max_orderkey);
     }
+#endif
 
 
     // Initialize g_customer_shm, g_orders_shm, g_lineitem_shm

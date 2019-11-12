@@ -14,7 +14,7 @@
 #define ENABLE_ASSERTION                    0
 #define ENABLE_LOGGING_TRACE                0
 #define ENABLE_LOGGING_DEBUG                0
-#define ENABLE_LOGGING_INFO                 1
+#define ENABLE_LOGGING_INFO                 0
 #endif
 
 
@@ -88,5 +88,18 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
 #define CONFIG_INDEX_TLS_BUFFER_SIZE_2      (4096U * 3 * std::min<uint32_t>(CONFIG_ORDERDATES_PER_BUCKET, 4U))  // Tune factor as necessary
 #define CONFIG_INDEX_BUFFER_GRACE_SIZE_2    (48)
 
+
+// Number of maximum pretopn limit
+// Calculate top-N in advance every several days
+//  >0 - Calculate top-N every these days in advance (when query!)
+#define CONFIG_TOPN_DATES_PER_PLATE         (32)
+static_assert(CONFIG_TOPN_DATES_PER_PLATE > 0);
+static_assert(CONFIG_TOPN_DATES_PER_PLATE <= 64, "Max 6 bits for orderdate_diff in a plate");
+static_assert(CONFIG_TOPN_DATES_PER_PLATE % CONFIG_ORDERDATES_PER_BUCKET == 0);
+
+// "N" in top-N when pre-calculating
+// If this threshold is exceeded, we can't make use of the pretopn index any more (fallback to normal index scan)
+#define CONFIG_EXPECT_MAX_TOPN              (10240U)  // According to problem description: 10000
+static_assert((sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN) % PAGE_SIZE == 0);
 
 #endif  // !defined(_BDCI19_CONFIG_H_INCLUDED_)

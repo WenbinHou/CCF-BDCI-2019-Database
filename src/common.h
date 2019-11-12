@@ -33,6 +33,9 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <mmintrin.h>
+#include <immintrin.h>
+
 
 typedef __int128 int128_t;
 typedef unsigned __int128 uint128_t;
@@ -164,9 +167,14 @@ public:
     std::atomic_uint64_t next_truncate_holder_1_id { 0 };
     std::atomic_uint64_t next_truncate_holder_2_id { 0 };
 
+    uint32_t total_plates = 0;
+    std::atomic_uint32_t pretopn_plate_id_shared_counter { 0 };
+
     pthread_mutex<process_shared> meta_update_mutex { };
     struct {
         uint32_t max_shipdate_orderdate_diff = 0;
+        uint64_t max_bucket_size_1 = 0;
+        uint64_t max_bucket_size_2 = 0;
     } meta { };
 
     bool sched_fifo_failed { false };
@@ -206,6 +214,16 @@ inline int g_holder_files_1_fd[CONFIG_INDEX_HOLDER_COUNT] { };
 inline int g_holder_files_2_fd[CONFIG_INDEX_HOLDER_COUNT] { };
 
 
+static_assert(CONFIG_TOPN_DATES_PER_PLATE % CONFIG_ORDERDATES_PER_BUCKET == 0);
+constexpr const uint32_t BUCKETS_PER_PLATE = CONFIG_TOPN_DATES_PER_PLATE / CONFIG_ORDERDATES_PER_BUCKET;
+constexpr const uint32_t PLATES_PER_MKTID = __div_up(BUCKETS_PER_MKTID, BUCKETS_PER_PLATE);
+
+inline load_file_context g_pretopn_file { };
+inline load_file_context g_pretopn_count_file { };
+
+inline uint64_t* g_pretopn_start_ptr = nullptr;  // [g_shared->total_plates][CONFIG_EXPECT_MAX_TOPN]
+inline uint32_t* g_pretopn_count_start_ptr = nullptr;  // [g_shared->total_plates]
+
 
 //==============================================================================
 // Functions in create_index.cpp
@@ -242,9 +260,45 @@ uint32_t calc_bucket_index(const uint8_t mktid, const date_t orderdate) noexcept
 }
 
 __always_inline
-date_t calc_base_orderdate(const date_t orderdate) noexcept
+date_t calc_bucket_base_orderdate(const date_t orderdate) noexcept
 {
     return __align_down((orderdate - MIN_TABLE_DATE), CONFIG_ORDERDATES_PER_BUCKET) + MIN_TABLE_DATE;
+}
+
+__always_inline
+uint32_t calc_bucket_mktid(const uint32_t bucket_id) noexcept
+{
+    return bucket_id / BUCKETS_PER_MKTID + 0;
+}
+
+__always_inline
+date_t calc_bucket_base_orderdate_by_bucket_id(const uint32_t bucket_id) noexcept
+{
+    return (bucket_id % BUCKETS_PER_MKTID) * CONFIG_ORDERDATES_PER_BUCKET + MIN_TABLE_DATE;
+}
+
+__always_inline
+uint32_t calc_plate_id(const uint32_t bucket_id) noexcept
+{
+    const uint32_t mktid = bucket_id / BUCKETS_PER_MKTID;
+    const uint32_t bucket_id_in_mkt = bucket_id % BUCKETS_PER_MKTID;
+    return mktid * PLATES_PER_MKTID + (bucket_id_in_mkt / BUCKETS_PER_PLATE);
+}
+
+__always_inline
+date_t calc_plate_base_orderdate_by_plate_id(const uint32_t plate_id) noexcept
+{
+    const uint32_t plate_id_in_mkt = plate_id % PLATES_PER_MKTID;
+    return plate_id_in_mkt * CONFIG_TOPN_DATES_PER_PLATE + MIN_TABLE_DATE;
+}
+
+__always_inline
+date_t calc_plate_base_bucket_id_by_plate_id(const uint32_t plate_id) noexcept
+{
+    const uint32_t mktid = plate_id / PLATES_PER_MKTID;
+    const uint32_t plate_id_in_mkt = plate_id % PLATES_PER_MKTID;
+
+    return (uint32_t)(mktid - 0) * BUCKETS_PER_MKTID + plate_id_in_mkt * BUCKETS_PER_PLATE;
 }
 
 __always_inline
