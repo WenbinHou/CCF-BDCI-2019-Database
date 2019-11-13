@@ -1084,9 +1084,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             p += 1;  // skip '\n'
 
             ASSERT(last_orderdate - last_bucket_base_orderdate < CONFIG_ORDERDATES_PER_BUCKET);
-            last_items[0] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
-            last_items[1] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
-            last_item_count = 2;
+            last_items[0] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
+            last_item_count = 1;
         }
 
 
@@ -1139,14 +1138,15 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                     max_orderdate_shipdate_diff = shipdate - last_orderdate;
                 }
 
-                ASSERT(last_item_count >= 2);
-                ASSERT(last_item_count < 8);
+                ASSERT(last_item_count >= 1);
+                ASSERT(last_item_count < 7);
                 last_items[last_item_count++] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
             }
             else {  // orderkey != last_orderkey
                 // Save current items to index buffer
-                ASSERT(last_item_count >= 2);
-                ASSERT(last_item_count <= 8);
+                ASSERT(last_item_count >= 1);
+                ASSERT(last_item_count <= 7);
+                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
                 append_current_order_to_index();
 
                 ASSERT(orderkey == last_orderkey + 1);
@@ -1178,9 +1178,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 }
 
                 ASSERT(last_orderdate - last_bucket_base_orderdate < CONFIG_ORDERDATES_PER_BUCKET);
-                last_items[0] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
-                last_items[1] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
-                last_item_count = 2;
+                last_items[0] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
+                last_item_count = 1;
             }
 
 
@@ -1188,6 +1187,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 ASSERT(p == valid_end);
 
                 // Save current items to index buffer
+                ASSERT(last_item_count >= 1);
+                ASSERT(last_item_count <= 7);
+                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
                 append_current_order_to_index();
 
                 break;
@@ -1268,7 +1270,7 @@ void worker_compute_pretopn_for_plate(
         const uint32_t* p = (const uint32_t*)bucket_ptr_major;
         const uint32_t* const end = (const uint32_t*)((uintptr_t)p + bucket_size_major);
         while (p < end) {
-            const uint32_t orderkey = *p & ~0xC0000000U;
+            const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
             p += 8;
 
             ASSERT(orderkey > 0, "bucket_id=%%u, bucket_size_major=%lu, offset=%lu",
@@ -1278,8 +1280,8 @@ void worker_compute_pretopn_for_plate(
 #endif
 
     const __m256i expend_mask = _mm256_set_epi32(
-        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
-        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00000000);
+        0x00000000, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
 
     const uint32_t* p = (const uint32_t*)bucket_ptr_major;
     const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr_major + bucket_size_major);
@@ -1315,30 +1317,30 @@ void worker_compute_pretopn_for_plate(
         } while(false)
 
     while (p < end_align32) {
-        const uint32_t orderkey1 = *p & ~0xC0000000U;
+        const uint32_t orderkey1 = *(p + 7) & ~0xC0000000U;
         ASSERT(orderkey1 > 0);
-        const uint32_t bucket_orderdate_diff1 = *p >> 30;
+        const uint32_t bucket_orderdate_diff1 = *(p + 7) >> 30;
         const date_t plate_orderdate_diff1 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff1;
         const __m256i items1 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
         p += 8;
 
-        const uint32_t orderkey2 = *p & ~0xC0000000U;
+        const uint32_t orderkey2 = *(p + 7) & ~0xC0000000U;
         ASSERT(orderkey2 > 0);
-        const uint32_t bucket_orderdate_diff2 = *p >> 30;
+        const uint32_t bucket_orderdate_diff2 = *(p + 7) >> 30;
         const date_t plate_orderdate_diff2 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff2;
         const __m256i items2 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
         p += 8;
 
-        const uint32_t orderkey3 = *p & ~0xC0000000U;
+        const uint32_t orderkey3 = *(p + 7) & ~0xC0000000U;
         ASSERT(orderkey3 > 0);
-        const uint32_t bucket_orderdate_diff3 = *p >> 30;
+        const uint32_t bucket_orderdate_diff3 = *(p + 7) >> 30;
         const date_t plate_orderdate_diff3 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff3;
         const __m256i items3 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
         p += 8;
 
-        const uint32_t orderkey4 = *p & ~0xC0000000U;
+        const uint32_t orderkey4 = *(p + 7) & ~0xC0000000U;
         ASSERT(orderkey4 > 0);
-        const uint32_t bucket_orderdate_diff4 = *p >> 30;
+        const uint32_t bucket_orderdate_diff4 = *(p + 7) >> 30;
         const date_t plate_orderdate_diff4 = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff4;
         const __m256i items4 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
         p += 8;
@@ -1364,9 +1366,9 @@ void worker_compute_pretopn_for_plate(
 
     ASSERT(p == end_align32);
     while (p < end) {
-        const uint32_t orderkey = *p & ~0xC0000000U;
+        const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
         ASSERT(orderkey > 0);
-        const uint32_t bucket_orderdate_diff = *p >> 30;
+        const uint32_t bucket_orderdate_diff = *(p + 7) >> 30;
         const date_t plate_orderdate_diff = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff;
         const __m256i items = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
         p += 8;
@@ -1485,7 +1487,7 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
             const uint32_t* p = (uint32_t*)ptr;
             const uint32_t* end = (uint32_t*)((uintptr_t)p + bucket_size_major);
             while (p < end) {
-                const uint32_t orderkey = *p & ~0xC0000000U;
+                const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
                 p += 8;
 
                 ASSERT(orderkey > 0, "bucket_id=%u, bucket_size_major=%lu, offset=%lu",
@@ -1723,8 +1725,8 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
             ASSERT(bucket_size_major % (8 * sizeof(uint32_t)) == 0);
 
             const __m256i expend_mask = _mm256_set_epi32(
-                0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
-                0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00000000);
+                0x00000000, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+                0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
             __m256i greater_than_value;
             if (base_orderdate > q_shipdate) {
                 greater_than_value = _mm256_set1_epi32(0);  // TODO: dummy. remove!
@@ -1740,36 +1742,36 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
             const uint32_t* const end = (uint32_t*)((uintptr_t)ptr + bucket_size_major);
             const uint32_t* const end_align32 = p + __align_down(bucket_size_major / sizeof(uint32_t), 32);
             while (p < end_align32) {
-                const uint32_t orderdate_diff1 = *p >> 30;
+                const uint32_t orderdate_diff1 = *(p + 7) >> 30;
                 const date_t orderdate1 = base_orderdate + orderdate_diff1;
-                const uint32_t orderkey1 = *p & ~0xC0000000U;
+                const uint32_t orderkey1 = *(p + 7) & ~0xC0000000U;
                 __m256i items1 = _mm256_load_si256((__m256i*)p);
                 p += 8;
                 const __m256i gt_mask1 = _mm256_cmpgt_epi32(items1, greater_than_value);
                 items1 = _mm256_and_si256(items1, gt_mask1);
                 items1 = _mm256_and_si256(items1, expend_mask);
 
-                const uint32_t orderdate_diff2 = *p >> 30;
+                const uint32_t orderdate_diff2 = *(p + 7) >> 30;
                 const date_t orderdate2 = base_orderdate + orderdate_diff2;
-                const uint32_t orderkey2 = *p & ~0xC0000000U;
+                const uint32_t orderkey2 = *(p + 7) & ~0xC0000000U;
                 __m256i items2 = _mm256_load_si256((__m256i*)p);
                 p += 8;
                 const __m256i gt_mask2 = _mm256_cmpgt_epi32(items2, greater_than_value);
                 items2 = _mm256_and_si256(items2, gt_mask2);
                 items2 = _mm256_and_si256(items2, expend_mask);
 
-                const uint32_t orderdate_diff3 = *p >> 30;
+                const uint32_t orderdate_diff3 = *(p + 7) >> 30;
                 const date_t orderdate3 = base_orderdate + orderdate_diff3;
-                const uint32_t orderkey3 = *p & ~0xC0000000U;
+                const uint32_t orderkey3 = *(p + 7) & ~0xC0000000U;
                 __m256i items3 = _mm256_load_si256((__m256i*)p);
                 p += 8;
                 const __m256i gt_mask3 = _mm256_cmpgt_epi32(items3, greater_than_value);
                 items3 = _mm256_and_si256(items3, gt_mask3);
                 items3 = _mm256_and_si256(items3, expend_mask);
 
-                const uint32_t orderdate_diff4 = *p >> 30;
+                const uint32_t orderdate_diff4 = *(p + 7) >> 30;
                 const date_t orderdate4 = base_orderdate + orderdate_diff4;
-                const uint32_t orderkey4 = *p & ~0xC0000000U;
+                const uint32_t orderkey4 = *(p + 7) & ~0xC0000000U;
                 __m256i items4 = _mm256_load_si256((__m256i*)p);
                 p += 8;
                 const __m256i gt_mask4 = _mm256_cmpgt_epi32(items4, greater_than_value);
@@ -1821,9 +1823,9 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
 
 
             while (p < end) {
-                const uint32_t orderdate_diff = *p >> 30;
+                const uint32_t orderdate_diff = *(p + 7) >> 30;
                 const date_t orderdate = base_orderdate + orderdate_diff;
-                const uint32_t orderkey = *p & ~0xC0000000U;
+                const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
 
                 __m256i items = _mm256_load_si256((__m256i*)p);
                 p += 8;
@@ -1864,9 +1866,9 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
 //            uint32_t* p = ptr;
 //            uint32_t* end = (uint32_t*)((uintptr_t)ptr + bucket_size_major);
 //            while (p < end) {
-//                const uint32_t orderdate_diff = *p >> 30;
+//                const uint32_t orderdate_diff = *(p + 7) >> 30;
 //                const date_t orderdate = base_orderdate + orderdate_diff;
-//                const uint32_t orderkey = *p & ~0xC0000000U;
+//                const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
 //
 //                __m256i items = _mm256_load_si256((__m256i*)p);
 //                p += 8;
