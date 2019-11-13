@@ -55,6 +55,7 @@ typedef uint64_t index64_t;
 #include "fs.h"
 #include "futex.h"
 #include "sem.h"
+#include "done_event.h"
 #include "mm.h"
 #include "mapper.h"
 #include "spin_lock.h"

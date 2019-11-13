@@ -98,6 +98,13 @@ public:
         _value.store((uint64_t)init_value, std::memory_order_seq_cst);
     }
 
+    [[nodiscard]]
+    __always_inline
+    uint32_t approx_value() const noexcept
+    {
+        return (uint32_t)_value.load(std::memory_order_relaxed);
+    }
+
     __always_inline
     void post(const uint32_t many = 1) noexcept
     {
