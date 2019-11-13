@@ -171,6 +171,46 @@ typedef semaphore<process_shared> process_shared_semaphore;
 
 
 
+
+template<typename TType>
+class mutex
+{
+    static_assert(
+            std::is_same<TType, process_private>::value ||
+            std::is_same<TType, process_shared>::value);
+
+public:
+    DISABLE_COPY_MOVE_CONSTRUCTOR(mutex);
+    mutex() noexcept = default;
+
+    __always_inline
+    void lock() noexcept
+    {
+        _sem.wait();
+    }
+
+    __always_inline
+    void unlock() noexcept
+    {
+        _sem.post(1);
+    }
+
+    [[nodiscard]]
+    __always_inline
+    bool try_lock() noexcept
+    {
+        return _sem.try_wait();
+    }
+
+private:
+    semaphore<TType> _sem { 1 };
+};
+
+typedef mutex<process_private> process_private_mutex;
+typedef mutex<process_shared> process_shared_mutex;
+
+
+
 //==============================================================================
 // Unittests
 //==============================================================================

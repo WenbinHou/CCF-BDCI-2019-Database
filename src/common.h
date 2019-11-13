@@ -125,6 +125,21 @@ public:
     }
 };
 
+struct query_result_t {
+    date_t orderdate;
+    uint32_t orderkey;
+    uint32_t total_expend_cent;
+
+    __always_inline
+    bool operator >(const query_result_t& other) const noexcept {
+        if (total_expend_cent > other.total_expend_cent) return true;
+        if (total_expend_cent < other.total_expend_cent) return false;
+        return (orderkey > other.orderkey);
+    }
+};
+
+
+
 //==============================================================================
 // Global Constants
 //==============================================================================
@@ -160,7 +175,7 @@ public:
         uint8_t length;
         char name[12];
     } all_mktsegments[8] { };  // only used in create_index
-    pthread_mutex<process_shared> all_mktsegments_insert_mutex { };  // only used in create_index
+    process_shared_mutex all_mktsegments_insert_mutex { };  // only used in create_index
 
     uint32_t total_buckets = 0;
     uint32_t buckets_per_holder = 0;
@@ -171,7 +186,7 @@ public:
     uint32_t total_plates = 0;
     std::atomic_uint32_t pretopn_plate_id_shared_counter { 0 };
 
-    pthread_mutex<process_shared> meta_update_mutex { };
+    process_shared_mutex meta_update_mutex { };
     struct {
         uint32_t max_shipdate_orderdate_diff = 0;
         uint64_t max_bucket_size_major = 0;

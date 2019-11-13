@@ -1671,19 +1671,6 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
     //
 #if ENABLE_ASSERTION
     if (tid == 0) {
-        struct query_result_t {
-            date_t orderdate;
-            uint32_t orderkey;
-            uint32_t total_expend_cent;
-
-            __always_inline
-            bool operator >(const query_result_t& other) const noexcept {
-                if (total_expend_cent > other.total_expend_cent) return true;
-                if (total_expend_cent < other.total_expend_cent) return false;
-                return (orderkey > other.orderkey);
-            }
-        };
-
         constexpr const uint32_t TOPN = 5;
         std::vector<query_result_t> results;
         results.reserve(TOPN);

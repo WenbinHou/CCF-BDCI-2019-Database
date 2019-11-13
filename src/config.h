@@ -19,9 +19,9 @@
 
 
 // Do we use spin_lock in bounded_bag<T> and mpmc_queue<T>?
-//  0 - Use std::mutex
+//  0 - Use mutex
 //  1 - Use spin_lock
-#define ENABLE_QUEUE_USE_SPIN_LOCK          1
+#define ENABLE_QUEUE_USE_SPIN_LOCK          0
 
 
 // Do we pin worker and loader threads to its corresponding CPU core?

@@ -68,7 +68,7 @@ private:
 #if ENABLE_QUEUE_USE_SPIN_LOCK
     spin_lock _lock { false };
 #else
-    std::mutex _lock { };
+    process_shared_mutex _lock { };
 #endif
 };
 
@@ -222,7 +222,7 @@ private:
 #if ENABLE_QUEUE_USE_SPIN_LOCK
     spin_lock _lock { false };
 #else
-    std::mutex _lock { };
+    process_shared_mutex _lock { };
 #endif
 };
 
