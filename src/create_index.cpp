@@ -49,11 +49,11 @@ namespace
     posix_shm_t<order_t> g_orderkey_to_order { };
     posix_shm_t<uint32_t> g_orderkey_to_custkey { };
 
-    void* g_items_buffer_1_start_ptr = nullptr;  // [index_tls_buffer_count][CONFIG_INDEX_TLS_BUFFER_SIZE_1]
-    void* g_items_buffer_2_start_ptr = nullptr;  // [index_tls_buffer_count][CONFIG_INDEX_TLS_BUFFER_SIZE_2]
+    void* g_items_buffer_major_start_ptr = nullptr;  // [index_tls_buffer_count][CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR]
+    void* g_items_buffer_minor_start_ptr = nullptr;  // [index_tls_buffer_count][CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR]
 
-    std::atomic_uint64_t* g_buckets_endoffset_1 = nullptr;  // [g_shared->total_buckets]
-    std::atomic_uint64_t* g_buckets_endoffset_2 = nullptr;  // [g_shared->total_buckets]
+    std::atomic_uint64_t* g_buckets_endoffset_major = nullptr;  // [g_shared->total_buckets]
+    std::atomic_uint64_t* g_buckets_endoffset_minor = nullptr;  // [g_shared->total_buckets]
 }
 
 
@@ -757,7 +757,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     uint32_t max_orderdate_shipdate_diff = 0;
 
     //
-    // Allocate for g_items_buffer_1_start_ptr, g_items_buffer_2_start_ptr
+    // Allocate for g_items_buffer_major_start_ptr, g_items_buffer_minor_start_ptr
     //
     {
         ASSERT(g_shared->total_buckets > 0);
@@ -766,14 +766,14 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             __div_up(MAX_TABLE_DATE - MIN_TABLE_DATE + 1, CONFIG_ORDERDATES_PER_BUCKET);
         DEBUG("index_tls_buffer_count: %lu", index_tls_buffer_count);
 
-        g_items_buffer_1_start_ptr = mmap_allocate_page2m(index_tls_buffer_count * CONFIG_INDEX_TLS_BUFFER_SIZE_1);
-        ASSERT(g_items_buffer_1_start_ptr != nullptr);
-        DEBUG("[%u] g_items_buffer_1_start_ptr: %p", tid, g_items_buffer_1_start_ptr);
+        g_items_buffer_major_start_ptr = mmap_allocate_page2m(index_tls_buffer_count * CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
+        ASSERT(g_items_buffer_major_start_ptr != nullptr);
+        DEBUG("[%u] g_items_buffer_major_start_ptr: %p", tid, g_items_buffer_major_start_ptr);
 
-        // Allocate for g_items_buffer_2_start_ptr
-        g_items_buffer_2_start_ptr = mmap_allocate_page2m(index_tls_buffer_count * CONFIG_INDEX_TLS_BUFFER_SIZE_2);
-        ASSERT(g_items_buffer_2_start_ptr != nullptr);
-        DEBUG("[%u] g_items_buffer_2_start_ptr: %p", tid, g_items_buffer_2_start_ptr);
+        // Allocate for g_items_buffer_minor_start_ptr
+        g_items_buffer_minor_start_ptr = mmap_allocate_page2m(index_tls_buffer_count * CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR);
+        ASSERT(g_items_buffer_minor_start_ptr != nullptr);
+        DEBUG("[%u] g_items_buffer_minor_start_ptr: %p", tid, g_items_buffer_minor_start_ptr);
     }
 
 
@@ -781,34 +781,34 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     {
         ASSERT(g_shared->total_buckets > 0);
 
-        ASSERT(g_endoffset_file_1.fd > 0);
-        ASSERT(g_endoffset_file_2.fd > 0);
+        ASSERT(g_endoffset_file_major.fd > 0);
+        ASSERT(g_endoffset_file_minor.fd > 0);
 
-        g_endoffset_file_1.file_size = sizeof(uint64_t) * g_shared->total_buckets;
-        g_endoffset_file_2.file_size = sizeof(uint64_t) * g_shared->total_buckets;
-        ASSERT(g_endoffset_file_1.file_size > 0);
-        ASSERT(g_endoffset_file_2.file_size > 0);
+        g_endoffset_file_major.file_size = sizeof(uint64_t) * g_shared->total_buckets;
+        g_endoffset_file_minor.file_size = sizeof(uint64_t) * g_shared->total_buckets;
+        ASSERT(g_endoffset_file_major.file_size > 0);
+        ASSERT(g_endoffset_file_minor.file_size > 0);
 
         g_shared->worker_sync_barrier.run_once_and_sync([]() {
-            C_CALL(ftruncate(g_endoffset_file_1.fd, g_endoffset_file_1.file_size));
-            C_CALL(ftruncate(g_endoffset_file_2.fd, g_endoffset_file_2.file_size));
+            C_CALL(ftruncate(g_endoffset_file_major.fd, g_endoffset_file_major.file_size));
+            C_CALL(ftruncate(g_endoffset_file_minor.fd, g_endoffset_file_minor.file_size));
         });
 
-        g_buckets_endoffset_1 = (std::atomic_uint64_t*)my_mmap(
-            g_endoffset_file_1.file_size,
+        g_buckets_endoffset_major = (std::atomic_uint64_t*)my_mmap(
+            g_endoffset_file_major.file_size,
             PROT_READ | PROT_WRITE,
             MAP_SHARED | MAP_POPULATE,
-            g_endoffset_file_1.fd,
+            g_endoffset_file_major.fd,
             0);
-        DEBUG("[%u] g_buckets_endoffset_1: %p", tid, g_buckets_endoffset_1);
+        DEBUG("[%u] g_buckets_endoffset_major: %p", tid, g_buckets_endoffset_major);
 
-        g_buckets_endoffset_2 = (std::atomic_uint64_t*)my_mmap(
-            g_endoffset_file_2.file_size,
+        g_buckets_endoffset_minor = (std::atomic_uint64_t*)my_mmap(
+            g_endoffset_file_minor.file_size,
             PROT_READ | PROT_WRITE,
             MAP_SHARED | MAP_POPULATE,
-            g_endoffset_file_2.fd,
+            g_endoffset_file_minor.fd,
             0);
-        DEBUG("[%u] g_buckets_endoffset_2: %p", tid, g_buckets_endoffset_2);
+        DEBUG("[%u] g_buckets_endoffset_minor: %p", tid, g_buckets_endoffset_minor);
     }
 
     //
@@ -817,68 +817,68 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     {
         ASSERT(g_shared->buckets_per_holder > 0);
 
-        const uint64_t holder_1_file_size = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_1 * g_shared->buckets_per_holder;
+        const uint64_t holder_major_file_size = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR * g_shared->buckets_per_holder;
         while (true) {
-            const uint32_t holder_id = g_shared->next_truncate_holder_1_id++;
+            const uint32_t holder_id = g_shared->next_truncate_holder_major_id++;
             if (holder_id >= CONFIG_INDEX_HOLDER_COUNT) break;
 
-            ASSERT(g_holder_files_1_fd[holder_id] > 0);
-            C_CALL(ftruncate(g_holder_files_1_fd[holder_id], holder_1_file_size));
+            ASSERT(g_holder_files_major_fd[holder_id] > 0);
+            C_CALL(ftruncate(g_holder_files_major_fd[holder_id], holder_major_file_size));
 
             const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
             const uint32_t end_bucket_id = (holder_id + 1) * g_shared->buckets_per_holder;
             for (uint32_t bucket_id = begin_bucket_id; bucket_id < end_bucket_id; ++bucket_id) {
-                g_buckets_endoffset_1[bucket_id] = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_1 * (bucket_id - begin_bucket_id);
+                g_buckets_endoffset_major[bucket_id] = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR * (bucket_id - begin_bucket_id);
             }
         }
 
-        const uint64_t holder_2_file_size = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_2 * g_shared->buckets_per_holder;
+        const uint64_t holder_minor_file_size = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR * g_shared->buckets_per_holder;
         while (true) {
-            const uint32_t holder_id = g_shared->next_truncate_holder_2_id++;
+            const uint32_t holder_id = g_shared->next_truncate_holder_minor_id++;
             if (holder_id >= CONFIG_INDEX_HOLDER_COUNT) break;
 
-            ASSERT(g_holder_files_2_fd[holder_id] > 0);
-            C_CALL(ftruncate(g_holder_files_2_fd[holder_id], holder_2_file_size));
+            ASSERT(g_holder_files_minor_fd[holder_id] > 0);
+            C_CALL(ftruncate(g_holder_files_minor_fd[holder_id], holder_minor_file_size));
 
             const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
             const uint32_t end_bucket_id = (holder_id + 1) * g_shared->buckets_per_holder;
             for (uint32_t bucket_id = begin_bucket_id; bucket_id < end_bucket_id; ++bucket_id) {
-                g_buckets_endoffset_2[bucket_id] = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_2 * (bucket_id - begin_bucket_id);
+                g_buckets_endoffset_minor[bucket_id] = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR * (bucket_id - begin_bucket_id);
             }
         }
     }
 
 
-#define _CALC_START_PTR_1(_BufferIndex) \
-    ((void*)((uintptr_t)g_items_buffer_1_start_ptr + (size_t)(_BufferIndex) * CONFIG_INDEX_TLS_BUFFER_SIZE_1))
-#define _CALC_START_PTR_2(_BufferIndex) \
-    ((void*)((uintptr_t)g_items_buffer_2_start_ptr + (size_t)(_BufferIndex) * CONFIG_INDEX_TLS_BUFFER_SIZE_2))
+#define _CALC_START_PTR_MAJOR(_BufferIndex) \
+    ((void*)((uintptr_t)g_items_buffer_major_start_ptr + (size_t)(_BufferIndex) * CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR))
+#define _CALC_START_PTR_MINOR(_BufferIndex) \
+    ((void*)((uintptr_t)g_items_buffer_minor_start_ptr + (size_t)(_BufferIndex) * CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR))
 
-    iovec* const bucket_data_1 = new iovec[g_shared->total_buckets];
+    iovec* const bucket_data_major = new iovec[g_shared->total_buckets];
     for (uint32_t bucket_id = 0; bucket_id < g_shared->total_buckets; ++bucket_id) {
-        bucket_data_1[bucket_id].iov_len = 0;
-        bucket_data_1[bucket_id].iov_base = _CALC_START_PTR_1(bucket_id);
+        bucket_data_major[bucket_id].iov_len = 0;
+        bucket_data_major[bucket_id].iov_base = _CALC_START_PTR_MAJOR(bucket_id);
     }
-    iovec* const bucket_data_2 = new iovec[g_shared->total_buckets];
+    iovec* const bucket_data_minor = new iovec[g_shared->total_buckets];
     for (uint32_t bucket_id = 0; bucket_id < g_shared->total_buckets; ++bucket_id) {
-        bucket_data_2[bucket_id].iov_len = 0;
-        bucket_data_2[bucket_id].iov_base = _CALC_START_PTR_2(bucket_id);
+        bucket_data_minor[bucket_id].iov_len = 0;
+        bucket_data_minor[bucket_id].iov_base = _CALC_START_PTR_MINOR(bucket_id);
     }
 
 
-    const auto maybe_submit_for_pwrite_1 = [&](/*inout*/ iovec& vec, /*in*/ uint32_t bucket_id) {
+    const auto maybe_submit_for_pwrite_major = [&](/*inout*/ iovec& vec, /*in*/ uint32_t bucket_id) {
         //ASSERT(bucket_id < index_tls_buffer_count, "bucket_id: %u", bucket_id);
-        ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_1);
+        ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
         ASSERT(vec.iov_len > 0);
 
         // Do pwrite
-        const uint64_t file_offset = g_buckets_endoffset_1[bucket_id].fetch_add(vec.iov_len);
+        const uint64_t file_offset = g_buckets_endoffset_major[bucket_id].fetch_add(vec.iov_len);
         // If not final writing:
-        //  ASSERT(vec.iov_len == CONFIG_INDEX_TLS_BUFFER_SIZE_1);
-        //  ASSERT(file_offset % CONFIG_INDEX_TLS_BUFFER_SIZE_1 == 0, "bucket_id: %u, file_offset: %lu", bucket_id, file_offset);
+        //  ASSERT(vec.iov_len == CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
+        //  ASSERT(file_offset % CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR == 0, "bucket_id: %u, file_offset: %lu", bucket_id, file_offset);
         const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
         const size_t cnt = C_CALL(pwrite(
-            g_holder_files_1_fd[holder_id],
+            g_holder_files_major_fd[holder_id],
             vec.iov_base,
             vec.iov_len,
             file_offset));
@@ -888,16 +888,16 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
         vec.iov_len = 0;
     };
 
-    const auto maybe_submit_for_pwrite_2 = [&](/*inout*/ iovec& vec, /*in*/ uint32_t bucket_id) {
+    const auto maybe_submit_for_pwrite_minor = [&](/*inout*/ iovec& vec, /*in*/ uint32_t bucket_id) {
         //ASSERT(bucket_id < index_tls_buffer_count, "bucket_id: %u", bucket_id);
-        ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_2);
+        ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR);
         ASSERT(vec.iov_len > 0);
 
         // Do pwrite
-        const uint64_t file_offset = g_buckets_endoffset_2[bucket_id].fetch_add(vec.iov_len);
+        const uint64_t file_offset = g_buckets_endoffset_minor[bucket_id].fetch_add(vec.iov_len);
         const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
         const size_t cnt = C_CALL(pwrite(
-            g_holder_files_2_fd[holder_id],
+            g_holder_files_minor_fd[holder_id],
             vec.iov_base,
             vec.iov_len,
             file_offset));
@@ -988,10 +988,10 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             ASSERT(last_item_count <= 8);
 
             if (last_item_count == 8) {
-                iovec& vec = bucket_data_1[last_bucket_id];
-                ASSERT(vec.iov_len < CONFIG_INDEX_TLS_BUFFER_SIZE_1);
-                ASSERT(vec.iov_base == _CALC_START_PTR_1(last_bucket_id));
-                static_assert(CONFIG_INDEX_TLS_BUFFER_SIZE_1 % (8 * sizeof(uint32_t)) == 0);
+                iovec& vec = bucket_data_major[last_bucket_id];
+                ASSERT(vec.iov_len < CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
+                ASSERT(vec.iov_base == _CALC_START_PTR_MAJOR(last_bucket_id));
+                static_assert(CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR % (8 * sizeof(uint32_t)) == 0);
 
                 memcpy(
                     (void*)((uintptr_t)vec.iov_base + vec.iov_len),
@@ -999,15 +999,15 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                     8 * sizeof(uint32_t));
                 vec.iov_len += 8 * sizeof(uint32_t);
 
-                ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_1);
-                if (vec.iov_len == CONFIG_INDEX_TLS_BUFFER_SIZE_1) {
-                    maybe_submit_for_pwrite_1(vec, last_bucket_id);
+                ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
+                if (vec.iov_len == CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR) {
+                    maybe_submit_for_pwrite_major(vec, last_bucket_id);
                 }
             }
             else {
-                iovec& vec = bucket_data_2[last_bucket_id];
-                ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_2 - CONFIG_INDEX_BUFFER_GRACE_SIZE_2);
-                ASSERT(vec.iov_base == _CALC_START_PTR_2(last_bucket_id));
+                iovec& vec = bucket_data_minor[last_bucket_id];
+                ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR - CONFIG_INDEX_BUFFER_GRACE_SIZE_MINOR);
+                ASSERT(vec.iov_base == _CALC_START_PTR_MINOR(last_bucket_id));
 
                 memcpy(
                     (void*)((uintptr_t)vec.iov_base + vec.iov_len),
@@ -1015,9 +1015,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                     last_item_count * sizeof(uint32_t));
                 vec.iov_len += last_item_count * sizeof(uint32_t);
 
-                ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_2);
-                if (vec.iov_len > CONFIG_INDEX_TLS_BUFFER_SIZE_2 - CONFIG_INDEX_BUFFER_GRACE_SIZE_2) {
-                    maybe_submit_for_pwrite_2(vec, last_bucket_id);
+                ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR);
+                if (vec.iov_len > CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR - CONFIG_INDEX_BUFFER_GRACE_SIZE_MINOR) {
+                    maybe_submit_for_pwrite_minor(vec, last_bucket_id);
                 }
             }
         };
@@ -1209,22 +1209,22 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     std::shuffle(bucket_ids_to_shuffle, bucket_ids_to_shuffle + g_shared->total_buckets, g);
     for (uint32_t i = 0; i < g_shared->total_buckets; ++i) {
         const uint32_t bucket_id = bucket_ids_to_shuffle[i];
-        iovec& vec_1 = bucket_data_1[bucket_id];
-        if (vec_1.iov_len > 0) {
-            maybe_submit_for_pwrite_1(vec_1, bucket_id);
+        iovec& vec_major = bucket_data_major[bucket_id];
+        if (vec_major.iov_len > 0) {
+            maybe_submit_for_pwrite_major(vec_major, bucket_id);
         }
 
-        iovec& vec_2 = bucket_data_2[bucket_id];
-        if (vec_2.iov_len > 0) {
-            maybe_submit_for_pwrite_2(vec_2, bucket_id);
+        iovec& vec_minor = bucket_data_minor[bucket_id];
+        if (vec_minor.iov_len > 0) {
+            maybe_submit_for_pwrite_minor(vec_minor, bucket_id);
         }
     }
 
 #if ENABLE_ASSERTION
     for (uint32_t i = 0; i < g_shared->total_buckets; ++i) {
         const uint32_t bucket_id = bucket_ids_to_shuffle[i];
-        //TODO: ASSERT(bucket_data_1[bucket_id].iov_len == 0);
-        ASSERT(bucket_data_2[bucket_id].iov_len == 0);
+        //TODO: ASSERT(bucket_data_major[bucket_id].iov_len == 0);
+        ASSERT(bucket_data_minor[bucket_id].iov_len == 0);
     }
 #endif
 
@@ -1247,32 +1247,32 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 __always_inline
 void worker_compute_pretopn_for_plate(
     /*in*/ const date_t bucket_base_orderdate_minus_plate_base_orderdate,
-    /*in*/ const void* const bucket_ptr_1,
-    /*in*/ const uint64_t bucket_size_1,
+    /*in*/ const void* const bucket_ptr_major,
+    /*in*/ const uint64_t bucket_size_major,
     /*inout*/ uint32_t& topn_count,
     /*inout*/ uint64_t* const topn_ptr) noexcept
 {
     ASSERT(bucket_base_orderdate_minus_plate_base_orderdate >= 0);
     ASSERT(bucket_base_orderdate_minus_plate_base_orderdate % CONFIG_ORDERDATES_PER_BUCKET == 0);
     ASSERT((uint32_t)bucket_base_orderdate_minus_plate_base_orderdate < CONFIG_ORDERDATES_PER_BUCKET * BUCKETS_PER_PLATE);
-    ASSERT(bucket_ptr_1 != nullptr);
-    ASSERT((uintptr_t)bucket_ptr_1 % PAGE_SIZE == 0);
-    ASSERT(bucket_size_1 > 0);
-    ASSERT(bucket_size_1 % (sizeof(uint32_t) * 8) == 0);
+    ASSERT(bucket_ptr_major != nullptr);
+    ASSERT((uintptr_t)bucket_ptr_major % PAGE_SIZE == 0);
+    ASSERT(bucket_size_major > 0);
+    ASSERT(bucket_size_major % (sizeof(uint32_t) * 8) == 0);
     ASSERT(topn_count <= CONFIG_EXPECT_MAX_TOPN);
     ASSERT(topn_ptr != nullptr);
     ASSERT((uintptr_t)topn_ptr % PAGE_SIZE == 0);
 
 #if ENABLE_ASSERTION
     {
-        const uint32_t* p = (const uint32_t*)bucket_ptr_1;
-        const uint32_t* const end = (const uint32_t*)((uintptr_t)p + bucket_size_1);
+        const uint32_t* p = (const uint32_t*)bucket_ptr_major;
+        const uint32_t* const end = (const uint32_t*)((uintptr_t)p + bucket_size_major);
         while (p < end) {
             const uint32_t orderkey = *p & ~0xC0000000U;
             p += 8;
 
-            ASSERT(orderkey > 0, "bucket_id=%%u, bucket_size_1=%lu, offset=%lu",
-            /*bucket_id,*/ bucket_size_1, (end - p) * sizeof(uint32_t));
+            ASSERT(orderkey > 0, "bucket_id=%%u, bucket_size_major=%lu, offset=%lu",
+            /*bucket_id,*/ bucket_size_major, (end - p) * sizeof(uint32_t));
         }
     }
 #endif
@@ -1281,9 +1281,9 @@ void worker_compute_pretopn_for_plate(
         0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
         0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00000000);
 
-    const uint32_t* p = (const uint32_t*)bucket_ptr_1;
-    const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr_1 + bucket_size_1);
-    const uint32_t* const end_align32 = p + __align_down(bucket_size_1 / sizeof(uint32_t), 32);
+    const uint32_t* p = (const uint32_t*)bucket_ptr_major;
+    const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr_major + bucket_size_major);
+    const uint32_t* const end_align32 = p + __align_down(bucket_size_major / sizeof(uint32_t), 32);
     ASSERT((uintptr_t)p % 32 == 0);
     ASSERT((uintptr_t)end_align32 % 32 == 0);
     ASSERT(end_align32 <= end);
@@ -1426,14 +1426,14 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
     }
 
 
-    void* const ptr = mmap_reserve_space(CONFIG_INDEX_SPARSE_BUCKET_SIZE_1);
+    void* const ptr = mmap_reserve_space(CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR);
 
     // For each bucket, write remaining buffer (if exists) to file
     uint32_t plate_ids_to_shuffle[g_shared->total_plates];
     for (uint32_t i = 0; i < g_shared->total_plates; ++i) {
         plate_ids_to_shuffle[i] = i;
     }
-    std::mt19937 g(0xdeedbeef); // NOLINT(cert-msc32-c)
+    std::mt19937 g(0xdeedbeef); // NOLINT(cert-msc32-c,cert-msc51-cpp)
     std::shuffle(plate_ids_to_shuffle, plate_ids_to_shuffle + g_shared->total_plates, g);
 
     while (true) {
@@ -1467,36 +1467,36 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
             ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
             const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
 
-            const uintptr_t bucket_start_offset_1 = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_1 * (bucket_id - begin_bucket_id);
-            const uint64_t bucket_size_1 = g_buckets_endoffset_1[bucket_id] - bucket_start_offset_1;
-            if (__unlikely(bucket_size_1 == 0)) continue;
+            const uintptr_t bucket_start_offset_major = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR * (bucket_id - begin_bucket_id);
+            const uint64_t bucket_size_major = g_buckets_endoffset_major[bucket_id] - bucket_start_offset_major;
+            if (__unlikely(bucket_size_major == 0)) continue;
 
             void* const mapped_ptr = mmap(
                 ptr,
-                bucket_size_1,
+                bucket_size_major,
                 PROT_READ,
                 MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
-                g_holder_files_1_fd[holder_id],
-                bucket_start_offset_1);
+                g_holder_files_major_fd[holder_id],
+                bucket_start_offset_major);
             CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
             ASSERT(mapped_ptr == ptr);
 
 #if ENABLE_ASSERTION
             const uint32_t* p = (uint32_t*)ptr;
-            const uint32_t* end = (uint32_t*)((uintptr_t)p + bucket_size_1);
+            const uint32_t* end = (uint32_t*)((uintptr_t)p + bucket_size_major);
             while (p < end) {
                 const uint32_t orderkey = *p & ~0xC0000000U;
                 p += 8;
 
-                ASSERT(orderkey > 0, "bucket_id=%u, bucket_size_1=%lu, offset=%lu",
-                    bucket_id, bucket_size_1, (end - p) * sizeof(uint32_t));
+                ASSERT(orderkey > 0, "bucket_id=%u, bucket_size_major=%lu, offset=%lu",
+                    bucket_id, bucket_size_major, (end - p) * sizeof(uint32_t));
             }
 #endif
 
             worker_compute_pretopn_for_plate(
                 (bucket_base_orderdate - plate_base_orderdate),
                 (const uint32_t*)ptr,
-                bucket_size_1,
+                bucket_size_major,
                 topn_count,
                 topn_ptr);
         }
@@ -1504,8 +1504,8 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
         std::sort(topn_ptr, topn_ptr + topn_count, std::greater<>());
     }
 
-    C_CALL(munmap(ptr, CONFIG_INDEX_SPARSE_BUCKET_SIZE_1));
-    mmap_return_space(ptr, CONFIG_INDEX_SPARSE_BUCKET_SIZE_1);
+    C_CALL(munmap(ptr, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR));
+    mmap_return_space(ptr, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR);
 
     INFO("[%u] done worker_compute_pretopn()", tid);
 }
@@ -1606,34 +1606,34 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
         worker_load_lineitem_multi_part(tid);
 
         g_shared->worker_sync_barrier.sync_and_run_once([]() {
-            uint64_t max_bucket_size_1 = 0;
-            uint64_t max_bucket_size_2 = 0;
+            uint64_t max_bucket_size_major = 0;
+            uint64_t max_bucket_size_minor = 0;
 
             for (uint32_t bucket_id = 0; bucket_id < g_shared->total_buckets; ++bucket_id) {
                 const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
                 const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
 
-                const uintptr_t bucket_start_offset_1 = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_1 * (bucket_id - begin_bucket_id);
-                const uint64_t bucket_size_1 = g_buckets_endoffset_1[bucket_id] - bucket_start_offset_1;
-                if (max_bucket_size_1 < bucket_size_1) {
-                    max_bucket_size_1 = bucket_size_1;
+                const uintptr_t bucket_start_offset_major = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR * (bucket_id - begin_bucket_id);
+                const uint64_t bucket_size_major = g_buckets_endoffset_major[bucket_id] - bucket_start_offset_major;
+                if (max_bucket_size_major < bucket_size_major) {
+                    max_bucket_size_major = bucket_size_major;
                 }
 
-                const uintptr_t bucket_start_offset_2 = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_2 * (bucket_id - begin_bucket_id);
-                const uint64_t bucket_size_2 = g_buckets_endoffset_2[bucket_id] - bucket_start_offset_2;
-                if (max_bucket_size_2 < bucket_size_2) {
-                    max_bucket_size_2 = bucket_size_2;
+                const uintptr_t bucket_start_offset_minor = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR * (bucket_id - begin_bucket_id);
+                const uint64_t bucket_size_minor = g_buckets_endoffset_minor[bucket_id] - bucket_start_offset_minor;
+                if (max_bucket_size_minor < bucket_size_minor) {
+                    max_bucket_size_minor = bucket_size_minor;
                 }
             }
 
-            INFO("max_bucket_size_1: %lu", max_bucket_size_1);
-            INFO("max_bucket_size_2: %lu", max_bucket_size_2);
+            INFO("max_bucket_size_major: %lu", max_bucket_size_major);
+            INFO("max_bucket_size_minor: %lu", max_bucket_size_minor);
 
-            ASSERT(max_bucket_size_1 < CONFIG_INDEX_SPARSE_BUCKET_SIZE_1);
-            ASSERT(max_bucket_size_2 < CONFIG_INDEX_SPARSE_BUCKET_SIZE_2);
+            ASSERT(max_bucket_size_major < CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR);
+            ASSERT(max_bucket_size_minor < CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR);
 
-            g_shared->meta.max_bucket_size_1 = max_bucket_size_1;
-            g_shared->meta.max_bucket_size_2 = max_bucket_size_2;
+            g_shared->meta.max_bucket_size_major = max_bucket_size_major;
+            g_shared->meta.max_bucket_size_minor = max_bucket_size_minor;
 
 
             //
@@ -1706,21 +1706,21 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
             const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
             const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
 
-            const uintptr_t bucket_start_offset_1 = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_1 * (bucket_id - begin_bucket_id);
-            const uint64_t bucket_size_1 = g_buckets_endoffset_1[bucket_id] - bucket_start_offset_1;
-            if (bucket_size_1 == 0) continue;
+            const uintptr_t bucket_start_offset_major = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR * (bucket_id - begin_bucket_id);
+            const uint64_t bucket_size_major = g_buckets_endoffset_major[bucket_id] - bucket_start_offset_major;
+            if (bucket_size_major == 0) continue;
 
             void* const mapped_ptr = mmap(
                 ptr,
-                bucket_size_1,
+                bucket_size_major,
                 PROT_READ,
                 MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
-                g_holder_files_1_fd[holder_id],
-                bucket_start_offset_1);
+                g_holder_files_major_fd[holder_id],
+                bucket_start_offset_major);
             CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
             ASSERT(mapped_ptr == ptr);
 
-            ASSERT(bucket_size_1 % (8 * sizeof(uint32_t)) == 0);
+            ASSERT(bucket_size_major % (8 * sizeof(uint32_t)) == 0);
 
             const __m256i expend_mask = _mm256_set_epi32(
                 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
@@ -1737,8 +1737,8 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
             }
 
             uint32_t* p = ptr;
-            const uint32_t* const end = (uint32_t*)((uintptr_t)ptr + bucket_size_1);
-            const uint32_t* const end_align32 = p + __align_down(bucket_size_1 / sizeof(uint32_t), 32);
+            const uint32_t* const end = (uint32_t*)((uintptr_t)ptr + bucket_size_major);
+            const uint32_t* const end_align32 = p + __align_down(bucket_size_major / sizeof(uint32_t), 32);
             while (p < end_align32) {
                 const uint32_t orderdate_diff1 = *p >> 30;
                 const date_t orderdate1 = base_orderdate + orderdate_diff1;
@@ -1862,7 +1862,7 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
             }
 //
 //            uint32_t* p = ptr;
-//            uint32_t* end = (uint32_t*)((uintptr_t)ptr + bucket_size_1);
+//            uint32_t* end = (uint32_t*)((uintptr_t)ptr + bucket_size_major);
 //            while (p < end) {
 //                const uint32_t orderdate_diff = *p >> 30;
 //                const date_t orderdate = base_orderdate + orderdate_diff;
@@ -1906,13 +1906,13 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
         }
 
         std::sort(results.begin(), results.end(), std::greater<>());
-//        for (const auto& r : results) {
-//            const uint32_t print_orderkey = ((r.orderkey & ~0b111) << 2) | (r.orderkey & 0b111);
-//            const uint32_t year = date_get_year(r.orderdate);
-//            const uint32_t month = date_get_month(r.orderdate);
-//            const uint32_t day = date_get_day(r.orderdate);
-//            INFO("%u|%04u-%02u-%02u|%u.%02u", print_orderkey, year, month, day, r.total_expend_cent / 100, r.total_expend_cent % 100);
-//        }
+        for (const auto& r : results) {
+            const uint32_t print_orderkey = ((r.orderkey & ~0b111) << 2) | (r.orderkey & 0b111);
+            const uint32_t year = date_get_year(r.orderdate);
+            const uint32_t month = date_get_month(r.orderdate);
+            const uint32_t day = date_get_day(r.orderdate);
+            INFO("%u|%04u-%02u-%02u|%u.%02u", print_orderkey, year, month, day, r.total_expend_cent / 100, r.total_expend_cent % 100);
+        }
     }
 #endif  // ENABLE_ASSERTION
 
@@ -1933,30 +1933,30 @@ void create_index_initialize_before_fork() noexcept
         for (uint32_t holder_id = 0; holder_id < CONFIG_INDEX_HOLDER_COUNT; ++holder_id) {
             char filename[32];
 
-            snprintf(filename, std::size(filename), "holder1_%04u", holder_id);
-            g_holder_files_1_fd[holder_id] = C_CALL(openat(
+            snprintf(filename, std::size(filename), "holder_major_%04u", holder_id);
+            g_holder_files_major_fd[holder_id] = C_CALL(openat(
                 g_index_directory_fd,
                 filename,
                 O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
                 0666));
 
-            snprintf(filename, std::size(filename), "holder2_%04u", holder_id);
-            g_holder_files_2_fd[holder_id] = C_CALL(openat(
+            snprintf(filename, std::size(filename), "holder_minor_%04u", holder_id);
+            g_holder_files_minor_fd[holder_id] = C_CALL(openat(
                 g_index_directory_fd,
                 filename,
                 O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
                 0666));
         }
 
-        g_endoffset_file_1.fd = C_CALL(openat(
+        g_endoffset_file_major.fd = C_CALL(openat(
             g_index_directory_fd,
-            "endoffset_1",
+            "endoffset_major",
             O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
             0666));
 
-        g_endoffset_file_2.fd = C_CALL(openat(
+        g_endoffset_file_minor.fd = C_CALL(openat(
             g_index_directory_fd,
-            "endoffset_2",
+            "endoffset_minor",
             O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
             0666));
     }
