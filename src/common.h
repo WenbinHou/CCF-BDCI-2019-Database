@@ -151,6 +151,8 @@ struct query_result_t {
 #define SHMKEY_CUSTKEY_TO_MKTID     ((key_t)0x19491004)
 #define SHMKEY_ORDERKEY_TO_ORDER    ((key_t)0x19491005)
 #define SHMKEY_ORDERKEY_TO_CUSTKEY  ((key_t)0x19491006)
+#define SHMKEY_QUERY_CONTEXT        ((key_t)0x19491007)
+
 
 //==============================================================================
 // Global Variables
@@ -186,6 +188,13 @@ public:
     uint32_t total_plates = 0;
     std::atomic_uint32_t pretopn_plate_id_shared_counter { 0 };
 
+    struct {
+        std::atomic_uint32_t parse_query_id_shared_counter { 0 };
+#if ENABLE_LOGGING_DEBUG
+        process_shared_mutex parse_query_id_logging_mutex { };
+#endif  // ENABLE_LOGGING_DEBUG
+    } use_index;
+
     process_shared_mutex meta_update_mutex { };
     struct {
         uint32_t max_shipdate_orderdate_diff = 0;
@@ -200,7 +209,6 @@ public:
 };
 
 inline shared_information_t* g_shared = nullptr;
-inline bool g_use_multi_process = false;
 inline uint32_t g_active_cpu_cores = 0;  // number of CPU cores
 inline uint32_t g_total_process_count = 0;  // process or thread count
 inline uint32_t g_id = 0;
