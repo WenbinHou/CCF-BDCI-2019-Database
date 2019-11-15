@@ -19,6 +19,27 @@ struct query_context_t
     uint32_t remaining_major_buckets = 0;
     uint32_t remaining_minor_buckets = 0;
 
+    //
+    // Queries are processed in 6 bucket ranges:
+    //
+    //  [check_orderdate_check_shipdate_begin_bucket_id, only_check_shipdate_begin_bucket_id)
+    //      Should check orderdate < q_orderdate && shipdate > q_shipdate
+    //
+    //  [only_check_shipdate_begin_bucket_id, nocheck_head_begin_bucket_id)
+    //      Should check shipdate > q_shipdate
+    //
+    //  [nocheck_head_begin_bucket_id, pretopn_begin_bucket_id)
+    //      No check - scan through major/minor index
+    //
+    //  [pretopn_begin_bucket_id, nocheck_tail_begin_bucket_id)
+    //      No check - make use of pretopn index
+    //
+    //  [nocheck_tail_begin_bucket_id, only_check_orderdate_begin_bucket_id)
+    //      No check - scan through major/minor index
+    //
+    //  [only_check_orderdate_begin_bucket_id, only_check_orderdate_end_bucket_id)
+    //      Should check orderdate < q_orderdate
+    //
     uint32_t check_orderdate_check_shipdate_begin_bucket_id;
     uint32_t only_check_shipdate_begin_bucket_id;
     uint32_t nocheck_head_begin_bucket_id;
@@ -253,6 +274,17 @@ void parse_query_scan_range() noexcept
             ASSERT(ctx->only_check_orderdate_begin_bucket_id <= ctx->only_check_orderdate_end_bucket_id);
             ASSERT(ctx->only_check_orderdate_begin_bucket_id + 1 >= ctx->only_check_orderdate_end_bucket_id);
         } while(false);
+
+
+        // Important here!
+        // Special check for queries whose q_topn > CONFIG_EXPECT_MAX_TOPN
+        // In this case, we should disable pretopn
+        if (__unlikely(ctx->q_topn > CONFIG_EXPECT_MAX_TOPN)) {
+            DEBUG("query #%u: q_topn > CONFIG_EXPECT_MAX_TOPN (%u > %u)", query_id, ctx->q_topn, CONFIG_EXPECT_MAX_TOPN);
+            ctx->pretopn_begin_bucket_id = ctx->nocheck_head_begin_bucket_id;
+            ctx->nocheck_tail_begin_bucket_id = ctx->nocheck_head_begin_bucket_id;
+        }
+
 
 #if ENABLE_LOGGING_DEBUG
         {
