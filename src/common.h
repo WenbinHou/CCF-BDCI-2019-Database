@@ -193,7 +193,9 @@ public:
 #if ENABLE_LOGGING_DEBUG
         process_shared_mutex parse_query_id_logging_mutex { };
 #endif  // ENABLE_LOGGING_DEBUG
-    } use_index;
+
+        std::atomic_uint32_t worker_query_id_shared_counter { 0 };
+    } use_index { };
 
     process_shared_mutex meta_update_mutex { };
     struct {

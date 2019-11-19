@@ -378,18 +378,23 @@ static void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid)
 
             const uint32_t to_custkey = __parse_u32<'|'>(end);
             if (to_custkey % 3 == 1) {
-                while (*end != '\n') ++end;
-                ++end;  // skip '\n'
-                while (*end != '\n') ++end;
-                ++end;  // skip '\n'
+                // Do nothing
             }
             else if (to_custkey % 3 == 2) {
                 while (*end != '\n') ++end;
                 ++end;  // skip '\n'
+                while (*end != '\n') ++end;
+                ++end;  // skip '\n'
             }
             else {  // to_custkey % 3 == 0
-                // Do nothing
+                while (*end != '\n') ++end;
+                ++end;  // skip '\n'
             }
+
+#if ENABLE_ASSERTION
+            const uint32_t new_to_custkey = __parse_u32<'|'>(end);
+            ASSERT(new_to_custkey % 3 == 1);
+#endif
         }
 
         TRACE("[%u] load customer: [%p, %p)", tid, p, end);
@@ -984,8 +989,47 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
 
         const auto append_current_order_to_index = [&]() {
-            ASSERT(last_item_count >= 2);
-            ASSERT(last_item_count <= 8);
+            ASSERT(last_item_count >= 1);
+            ASSERT(last_item_count <= 7);
+            if (last_item_count == 7) {
+            }
+            else if (last_item_count == 6) {
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+            }
+            else if (last_item_count == 5) {
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+            }
+            else if (last_item_count == 4) {
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+            }
+            else if (last_item_count == 3) {
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+            }
+            else if (last_item_count == 2) {
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+            }
+            else if (last_item_count == 1) {
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+                last_items[last_item_count++] = 0 << 24 | 0X000000;
+            }
+            else {
+                PANIC("should not reach here");
+            }
+            last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
             if (last_item_count == 8) {
                 iovec& vec = bucket_data_major[last_bucket_id];
@@ -1005,6 +1049,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 }
             }
             else {
+                ASSERT(last_item_count < 5);
+
                 iovec& vec = bucket_data_minor[last_bucket_id];
                 ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR - CONFIG_INDEX_BUFFER_GRACE_SIZE_MINOR);
                 ASSERT(vec.iov_base == _CALC_START_PTR_MINOR(last_bucket_id));
@@ -1144,9 +1190,6 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             }
             else {  // orderkey != last_orderkey
                 // Save current items to index buffer
-                ASSERT(last_item_count >= 1);
-                ASSERT(last_item_count <= 7);
-                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
                 append_current_order_to_index();
 
                 ASSERT(orderkey == last_orderkey + 1);
@@ -1187,9 +1230,6 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 ASSERT(p == valid_end);
 
                 // Save current items to index buffer
-                ASSERT(last_item_count >= 1);
-                ASSERT(last_item_count <= 7);
-                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
                 append_current_order_to_index();
 
                 break;
@@ -1294,12 +1334,13 @@ void worker_compute_pretopn_for_plate(
 #define _CHECK_RESULT(N) \
         do { \
             ASSERT(orderkey##N > 0, ""); \
+            ASSERT(orderkey##N < (1U << 30)); \
             ASSERT(orderkey##N <= g_max_orderkey, "orderkey" #N " too large: %u", orderkey##N); \
             ASSERT(total_expend_cent##N > 0, "orderkey" #N ": %u", orderkey##N); \
             ASSERT(total_expend_cent##N < (1U << 28)); \
             ASSERT(plate_orderdate_diff##N >= 0); \
             ASSERT(plate_orderdate_diff##N < (1 << 6)); \
-            const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(plate_orderdate_diff##N) << 30 | orderkey##N; \
+            const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(orderkey##N) << 6 | (plate_orderdate_diff##N); \
             \
             if (topn_count < CONFIG_EXPECT_MAX_TOPN) { \
                 topn_ptr[topn_count++] = value; \
@@ -1447,12 +1488,8 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
         const uint32_t plate_base_bucket_id = calc_plate_base_bucket_id_by_plate_id(plate_id);
         const uint32_t base_mktid = calc_bucket_mktid(plate_base_bucket_id);
 
-        const date_t bucket_base_orderdate = calc_bucket_base_orderdate_by_bucket_id(plate_base_bucket_id);
         const date_t plate_base_orderdate = calc_plate_base_orderdate_by_plate_id(plate_id);
         ASSERT((plate_base_orderdate - MIN_TABLE_DATE) % CONFIG_TOPN_DATES_PER_PLATE == 0);
-        ASSERT(bucket_base_orderdate >= plate_base_orderdate);
-        ASSERT(bucket_base_orderdate < plate_base_orderdate + CONFIG_TOPN_DATES_PER_PLATE);
-        ASSERT((bucket_base_orderdate - plate_base_orderdate) % CONFIG_ORDERDATES_PER_BUCKET == 0);
 
         uint32_t& topn_count = g_pretopn_count_start_ptr[plate_id];
         uint64_t* topn_ptr = g_pretopn_start_ptr + (uint64_t)plate_id * CONFIG_EXPECT_MAX_TOPN;
@@ -1464,6 +1501,11 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
 #if ENABLE_ASSERTION
             ASSERT(calc_plate_id(bucket_id) == plate_id);
 #endif
+
+            const date_t bucket_base_orderdate = calc_bucket_base_orderdate_by_bucket_id(bucket_id);
+            ASSERT(bucket_base_orderdate >= plate_base_orderdate);
+            ASSERT(bucket_base_orderdate < plate_base_orderdate + CONFIG_TOPN_DATES_PER_PLATE);
+            ASSERT((bucket_base_orderdate - plate_base_orderdate) % CONFIG_ORDERDATES_PER_BUCKET == 0);
 
             const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
             ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
@@ -1722,7 +1764,7 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
                 greater_than_value = _mm256_set1_epi32(0x7FFFFFFF);  // TODO: dummy. remove!
             }
             else {  // base_orderdate <= q_shipdate < base_orderdate + 128
-                greater_than_value = _mm256_set1_epi32((q_shipdate - base_orderdate) << 24);  // TODO: dummy. remove!
+                greater_than_value = _mm256_set1_epi32((q_shipdate - base_orderdate) << 24 | 0x00FFFFFF);  // TODO: dummy. remove!
             }
 
             uint32_t* p = ptr;
