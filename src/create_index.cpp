@@ -210,9 +210,11 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
         ASSERT(g_orders_shm.ptr != nullptr);
 
 #else
-        uint64_t clear_size = std::min<uint64_t>(
-            g_orders_file.file_size,
-            sizeof(uint32_t) * g_max_orderkey * 6);
+        // TODO: adjust this!
+        const uint64_t clear_size = g_orders_file.file_size;
+//        const uint64_t clear_size = std::min<uint64_t>(
+//            g_orders_file.file_size,
+//            sizeof(uint32_t) * g_max_orderkey * 6);
         //TODO: const uint32_t free_mem = mem_get_free_bytes();
         // Make use of free memory to reduce page cache clearing?
 
@@ -912,8 +914,11 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
         vec.iov_len = 0;
     };
 
-
-
+    static constexpr const uint32_t COUNT_BASE = 8;
+    uint32_t last_items[COUNT_BASE + 8];  // start index: COUNT_BASE
+    for (uint32_t i = 0; i < COUNT_BASE; ++i) {
+        last_items[i] = (/*dummy*/0 << 24) | 0x00000000;
+    }
 
     
 #if ENABLE_SHM_CACHE_TXT
@@ -980,8 +985,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
         TRACE("[%u] load lineitem: [%p, %p)", tid, p, valid_end);
 
-        uint32_t last_items[8];
-        uint32_t last_item_count;
+        uint32_t last_item_count = COUNT_BASE;  // 8 heading zeros
         uint32_t last_orderkey;
         uint32_t last_bucket_id;
         date_t last_orderdate;
@@ -989,49 +993,13 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
 
         const auto append_current_order_to_index = [&]() {
-            ASSERT(last_item_count >= 1);
-            ASSERT(last_item_count <= 7);
-            if (last_item_count == 7) {
-            }
-            else if (last_item_count == 6) {
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-            }
-            else if (last_item_count == 5) {
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-            }
-            else if (last_item_count == 4) {
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-            }
-            else if (last_item_count == 3) {
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-            }
-            else if (last_item_count == 2) {
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-            }
-            else if (last_item_count == 1) {
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-                last_items[last_item_count++] = 0 << 24 | 0X000000;
-            }
-            else {
-                PANIC("should not reach here");
-            }
+            ASSERT(last_item_count >= COUNT_BASE + 1);
+            ASSERT(last_item_count <= COUNT_BASE + 7);
             last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
-            if (last_item_count == 8) {
+            if (last_item_count >= COUNT_BASE + 5) {  // 8,7,6,5
+                ASSERT(last_item_count <= COUNT_BASE + 8);
+
                 iovec& vec = bucket_data_major[last_bucket_id];
                 ASSERT(vec.iov_len < CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
                 ASSERT(vec.iov_base == _CALC_START_PTR_MAJOR(last_bucket_id));
@@ -1039,7 +1007,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
                 memcpy(
                     (void*)((uintptr_t)vec.iov_base + vec.iov_len),
-                    last_items,
+                    last_items + last_item_count - 8,
                     8 * sizeof(uint32_t));
                 vec.iov_len += 8 * sizeof(uint32_t);
 
@@ -1048,8 +1016,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                     maybe_submit_for_pwrite_major(vec, last_bucket_id);
                 }
             }
-            else {
-                ASSERT(last_item_count < 5);
+            else {  // 4,3,2
+                ASSERT(last_item_count < COUNT_BASE + 5);
+                ASSERT(last_item_count >= COUNT_BASE + 2);
 
                 iovec& vec = bucket_data_minor[last_bucket_id];
                 ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR - CONFIG_INDEX_BUFFER_GRACE_SIZE_MINOR);
@@ -1057,9 +1026,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
                 memcpy(
                     (void*)((uintptr_t)vec.iov_base + vec.iov_len),
-                    last_items,
-                    last_item_count * sizeof(uint32_t));
-                vec.iov_len += last_item_count * sizeof(uint32_t);
+                    last_items + COUNT_BASE ,
+                    (last_item_count - COUNT_BASE) * sizeof(uint32_t));
+                vec.iov_len += (last_item_count - COUNT_BASE) * sizeof(uint32_t);
 
                 ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR);
                 if (vec.iov_len > CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR - CONFIG_INDEX_BUFFER_GRACE_SIZE_MINOR) {
@@ -1130,8 +1099,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             p += 1;  // skip '\n'
 
             ASSERT(last_orderdate - last_bucket_base_orderdate < CONFIG_ORDERDATES_PER_BUCKET);
-            last_items[0] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
-            last_item_count = 1;
+            last_items[COUNT_BASE + 0] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
+            last_item_count = COUNT_BASE + 1;
         }
 
 
@@ -1184,8 +1153,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                     max_orderdate_shipdate_diff = shipdate - last_orderdate;
                 }
 
-                ASSERT(last_item_count >= 1);
-                ASSERT(last_item_count < 7);
+                ASSERT(last_item_count >= COUNT_BASE + 1);
+                ASSERT(last_item_count < COUNT_BASE + 7);
                 last_items[last_item_count++] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
             }
             else {  // orderkey != last_orderkey
@@ -1221,8 +1190,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 }
 
                 ASSERT(last_orderdate - last_bucket_base_orderdate < CONFIG_ORDERDATES_PER_BUCKET);
-                last_items[0] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
-                last_item_count = 1;
+                last_items[COUNT_BASE + 0] = ((uint32_t)(shipdate - last_bucket_base_orderdate) << 24) | expend_cent;
+                last_item_count = COUNT_BASE + 1;
             }
 
 

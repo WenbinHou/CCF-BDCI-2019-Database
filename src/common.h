@@ -319,7 +319,7 @@ date_t calc_plate_base_orderdate_by_plate_id(const uint32_t plate_id) noexcept
 }
 
 __always_inline
-date_t calc_plate_base_bucket_id_by_plate_id(const uint32_t plate_id) noexcept
+uint32_t calc_plate_base_bucket_id_by_plate_id(const uint32_t plate_id) noexcept
 {
     const uint32_t mktid = plate_id / PLATES_PER_MKTID;
     const uint32_t plate_id_in_mkt = plate_id % PLATES_PER_MKTID;

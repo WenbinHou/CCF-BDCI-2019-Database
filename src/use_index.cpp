@@ -887,6 +887,60 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             continue;
         }
 
+        ASSERT(g_pretopn_start_ptr != nullptr);
+        ASSERT(g_pretopn_count_start_ptr != nullptr);
+        if (ctx->nocheck_tail_begin_bucket_id > ctx->pretopn_begin_bucket_id) {
+            ASSERT((ctx->nocheck_tail_begin_bucket_id - ctx->pretopn_begin_bucket_id) % BUCKETS_PER_PLATE == 0);
+
+            const uint32_t from_plate_id = calc_plate_id(ctx->pretopn_begin_bucket_id);
+            const uint32_t to_plate_id = from_plate_id + (ctx->nocheck_tail_begin_bucket_id - ctx->pretopn_begin_bucket_id) / BUCKETS_PER_PLATE - 1;
+            TRACE("from_plate_id=%u (base_orderdate=%u) -> to_plate_id=%u (base_orderdate=%u)",
+                from_plate_id, calc_plate_base_orderdate_by_plate_id(from_plate_id),
+                to_plate_id, calc_plate_base_orderdate_by_plate_id(to_plate_id));
+#if ENABLE_ASSERTION
+            ASSERT(calc_plate_base_bucket_id_by_plate_id(from_plate_id) == ctx->pretopn_begin_bucket_id);
+#endif
+
+            for (uint32_t plate_id = from_plate_id; plate_id <= to_plate_id; ++plate_id) {
+                const uint32_t topn_count = g_pretopn_count_start_ptr[plate_id];
+                ASSERT(topn_count <= CONFIG_EXPECT_MAX_TOPN);
+                const uint64_t* const topn_ptr = g_pretopn_start_ptr + (uint64_t)plate_id * CONFIG_EXPECT_MAX_TOPN;
+                const date_t plate_base_orderdate = calc_plate_base_orderdate_by_plate_id(plate_id);
+
+                for (uint32_t i = 0; i < topn_count; ++i) {
+                    const uint64_t value = topn_ptr[i];
+                    const uint32_t total_expend_cent = (uint32_t)(value >> 36);
+                    const uint32_t orderkey = (uint32_t)((value >> 6) & ((1U << 30) - 1));
+                    const uint32_t orderdate_diff = (uint32_t)(value & 0b111111);
+                    ASSERT(total_expend_cent > 0);
+
+                    query_result_t tmp;
+                    tmp.orderdate = plate_base_orderdate + orderdate_diff;
+                    tmp.orderkey = orderkey;
+                    tmp.total_expend_cent = total_expend_cent;
+
+                    if (ctx->results_length < ctx->q_topn) {
+                        ctx->results[ctx->results_length++] = tmp;
+                        if (__unlikely(ctx->results_length == ctx->q_topn)) {
+                            std::make_heap(ctx->results, ctx->results + ctx->results_length, std::greater<>());
+                        }
+                    }
+                    else {
+                        ASSERT(ctx->results_length > 0);
+                        ASSERT(ctx->results_length == ctx->q_topn);
+                        if (tmp > ctx->results[0]) {
+                            std::pop_heap(ctx->results, ctx->results + ctx->results_length, std::greater<>());
+                            ctx->results[ctx->results_length-1] = tmp;
+                            std::push_heap(ctx->results, ctx->results + ctx->results_length, std::greater<>());
+                        }
+                        else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         for (uint32_t bucket_id = ctx->check_orderdate_check_shipdate_begin_bucket_id;
             bucket_id < ctx->nocheck_head_begin_bucket_id;
             ++bucket_id) {
@@ -927,6 +981,41 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
 
         for (uint32_t bucket_id = ctx->nocheck_head_begin_bucket_id;
+            bucket_id < ctx->pretopn_begin_bucket_id;
+            ++bucket_id) {
+
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
+            const uint32_t holder_begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_major = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR * (bucket_id - holder_begin_bucket_id);
+            const uint64_t bucket_size_major = g_buckets_endoffset_major[bucket_id] - bucket_start_offset_major;
+            if (__unlikely(bucket_size_major == 0)) continue;
+
+            void* const mapped_ptr = mmap(
+                ptr,
+                bucket_size_major,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_major_fd[holder_id],
+                bucket_start_offset_major);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == ptr);
+
+            scan_major_index_nocheck_orderdate_maybe_check_shipdate</*_CheckShipdateDiff*/false>(
+                (const uint32_t*)ptr,
+                bucket_size_major,
+                calc_bucket_base_orderdate_by_bucket_id(bucket_id),
+                ctx->results,
+                ctx->results_length,
+                ctx->q_topn,
+                ctx->q_shipdate);
+
+            //INFO("query #%u: <2.1> nocheck_orderdate, nocheck_shipdate bucket %u", query_id, bucket_id);
+        }
+
+
+        for (uint32_t bucket_id = ctx->nocheck_tail_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_begin_bucket_id;
             ++bucket_id) {
 
@@ -957,7 +1046,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
                 ctx->q_topn,
                 ctx->q_shipdate);
 
-            //INFO("query #%u: <2> nocheck_orderdate, nocheck_shipdate bucket %u", query_id, bucket_id);
+            //INFO("query #%u: <2.2> nocheck_orderdate, nocheck_shipdate bucket %u", query_id, bucket_id);
         }
 
 
@@ -1140,11 +1229,13 @@ void use_index_initialize_before_fork() noexcept
             g_index_directory_fd,
             "pretopn",
             &g_pretopn_file);
+        ASSERT(g_pretopn_file.file_size == sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN * g_shared->total_plates);
 
         __openat_file_read(
             g_index_directory_fd,
             "pretopn_count",
             &g_pretopn_count_file);
+        ASSERT(g_pretopn_count_file.file_size == sizeof(uint32_t) * g_shared->total_plates);
     }
 
 
@@ -1153,6 +1244,22 @@ void use_index_initialize_before_fork() noexcept
     //
     {
         parse_queries();
+    }
+
+
+    //
+    // Map pretopn_count file to memory
+    //
+    {
+        ASSERT(g_pretopn_count_file.file_size > 0);
+        ASSERT(g_pretopn_count_file.fd > 0);
+        g_pretopn_count_start_ptr = (uint32_t*)my_mmap(
+            g_pretopn_count_file.file_size,
+            PROT_READ,
+            MAP_PRIVATE | MAP_POPULATE,
+            g_pretopn_count_file.fd,
+            0);
+        INFO("[%u] g_pretopn_count_start_ptr: %p", g_id, g_pretopn_count_start_ptr);
     }
 
 
@@ -1189,6 +1296,21 @@ void use_index_initialize_after_fork() noexcept
         ASSERT(g_query_contexts != nullptr);
 
         parse_query_scan_range();
+    }
+
+    //
+    // Map pretopn file
+    //
+    {
+        ASSERT(g_pretopn_file.file_size > 0);
+        ASSERT(g_pretopn_file.fd > 0);
+        g_pretopn_start_ptr = (uint64_t*)my_mmap(
+            g_pretopn_file.file_size,
+            PROT_READ,
+            MAP_PRIVATE | MAP_POPULATE,
+            g_pretopn_file.fd,
+            0);
+        INFO("[%u] g_pretopn_start_ptr: %p", g_id, g_pretopn_start_ptr);
     }
 }
 
