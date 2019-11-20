@@ -1364,6 +1364,16 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             bucket_id < ctx->nocheck_head_begin_bucket_id;
             ++bucket_id) {
 
+            // Check "only_minor_max_expend" index (likely to skip minor buckets)
+            ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
+            const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_minor_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
+
             const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
             ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
             const uint32_t holder_begin_bucket_id = holder_id * g_shared->buckets_per_holder;
@@ -1399,6 +1409,16 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         for (uint32_t bucket_id = ctx->nocheck_head_begin_bucket_id;
             bucket_id < ctx->pretopn_begin_bucket_id;
             ++bucket_id) {
+
+            // Check "only_minor_max_expend" index (likely to skip minor buckets)
+            ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
+            const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_minor_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
 
             const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
             ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
@@ -1438,6 +1458,16 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             bucket_id < ctx->only_check_orderdate_begin_bucket_id;
             ++bucket_id) {
 
+            // Check "only_minor_max_expend" index (likely to skip minor buckets)
+            ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
+            const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_minor_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
+
             const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
             ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
             const uint32_t holder_begin_bucket_id = holder_id * g_shared->buckets_per_holder;
@@ -1475,6 +1505,16 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         for (uint32_t bucket_id = ctx->only_check_orderdate_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_end_bucket_id;
             ++bucket_id) {
+
+            // Check "only_minor_max_expend" index (likely to skip minor buckets)
+            ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
+            const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_minor_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
 
             const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
             ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
@@ -1654,6 +1694,12 @@ void use_index_initialize_before_fork() noexcept
             "pretopn_count",
             &g_pretopn_count_file);
         ASSERT(g_pretopn_count_file.file_size == sizeof(uint32_t) * g_shared->total_plates);
+
+        __openat_file_read(
+            g_index_directory_fd,
+            "only_minor_max_expend",
+            &g_only_minor_max_expend_file);
+        ASSERT(g_only_minor_max_expend_file.file_size == sizeof(uint32_t) * g_shared->total_buckets);
     }
 
 
@@ -1678,6 +1724,16 @@ void use_index_initialize_before_fork() noexcept
             g_pretopn_count_file.fd,
             0);
         INFO("[%u] g_pretopn_count_start_ptr: %p", g_id, g_pretopn_count_start_ptr);
+
+        ASSERT(g_only_minor_max_expend_file.file_size > 0);
+        ASSERT(g_only_minor_max_expend_file.fd > 0);
+        g_only_minor_max_expend_start_ptr = (uint32_t*)my_mmap(
+            g_only_minor_max_expend_file.file_size,
+            PROT_READ,
+            MAP_PRIVATE | MAP_POPULATE,
+            g_only_minor_max_expend_file.fd,
+            0);
+        INFO("[%u] g_only_minor_max_expend_start_ptr: %p", g_id, g_only_minor_max_expend_start_ptr);
     }
 
 

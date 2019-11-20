@@ -244,11 +244,13 @@ static_assert(CONFIG_TOPN_DATES_PER_PLATE % CONFIG_ORDERDATES_PER_BUCKET == 0);
 constexpr const uint32_t BUCKETS_PER_PLATE = CONFIG_TOPN_DATES_PER_PLATE / CONFIG_ORDERDATES_PER_BUCKET;
 constexpr const uint32_t PLATES_PER_MKTID = __div_up(BUCKETS_PER_MKTID, BUCKETS_PER_PLATE);
 
+inline load_file_context g_only_minor_max_expend_file { };
 inline load_file_context g_pretopn_file { };
 inline load_file_context g_pretopn_count_file { };
 
 inline uint64_t* g_pretopn_start_ptr = nullptr;  // [g_shared->total_plates][CONFIG_EXPECT_MAX_TOPN]
 inline uint32_t* g_pretopn_count_start_ptr = nullptr;  // [g_shared->total_plates]
+inline uint32_t* g_only_minor_max_expend_start_ptr = nullptr;  // [g_shared->total_buckets]
 
 
 //==============================================================================

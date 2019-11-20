@@ -1401,7 +1401,8 @@ static void worker_compute_pretopn_for_plate_minor(
     /*in*/ const void* const bucket_ptr_minor,
     /*in*/ const uint64_t bucket_size_minor,
     /*inout*/ uint32_t& topn_count,
-    /*inout*/ uint64_t* const topn_ptr) noexcept
+    /*inout*/ uint64_t* const topn_ptr,
+    /*inout*/ uint32_t& only_minor_max_expend_cent_i32) noexcept
 {
     ASSERT(bucket_base_orderdate_minus_plate_base_orderdate >= 0);
     ASSERT(bucket_base_orderdate_minus_plate_base_orderdate % CONFIG_ORDERDATES_PER_BUCKET == 0);
@@ -1474,6 +1475,7 @@ static void worker_compute_pretopn_for_plate_minor(
         curr_min_expend_cent = _mm256_set1_epi32((int)curr_min_expend_cent_i32);
     }
 
+    __m256i only_minor_max_expend_cent = _mm256_set1_epi32((int)only_minor_max_expend_cent_i32);
 
     const __m256i expend_mask = _mm256_set_epi32(
         0x00000000, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
@@ -1502,6 +1504,25 @@ static void worker_compute_pretopn_for_plate_minor(
         const __m256i sum = _mm256_hadd_epi32(
             _mm256_hadd_epi32(items12, items34),
             _mm256_hadd_epi32(items56, items78));
+
+        const __m256i only_minor_max_expend_cent_gt_sum = _mm256_cmpgt_epi32(only_minor_max_expend_cent, sum);
+        if (_mm256_movemask_epi8(only_minor_max_expend_cent_gt_sum) != (int)0xFFFFFFFF) {
+            // Update only_minor_max_expend_cent_i32
+            const __m128i sum_lo = _mm256_castsi256_si128(sum);
+            const __m128i sum_hi = _mm256_extracti128_si256(sum, 1);
+            const __m128i max4 = _mm_max_epu32(sum_lo, sum_hi);
+
+            // TODO: find a better way?
+            const uint32_t tmp1 = _mm_extract_epi32(max4, 0);
+            const uint32_t tmp2 = _mm_extract_epi32(max4, 1);
+            const uint32_t tmp3 = _mm_extract_epi32(max4, 2);
+            const uint32_t tmp4 = _mm_extract_epi32(max4, 3);
+            const uint32_t max = std::max(std::max(tmp1, tmp2), std::max(tmp3, tmp4));
+
+            ASSERT(only_minor_max_expend_cent_i32 <= max);
+            only_minor_max_expend_cent_i32 = max;
+            only_minor_max_expend_cent = _mm256_set1_epi32((int)only_minor_max_expend_cent_i32);
+        }
 
         const __m256i curr_min_gt_sum = _mm256_cmpgt_epi32(curr_min_expend_cent, sum);
         if (__likely(_mm256_movemask_epi8(curr_min_gt_sum) == (int)0xFFFFFFFF)) {
@@ -1611,12 +1632,18 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
         ASSERT(g_pretopn_file.file_size > 0);
         ASSERT(g_pretopn_count_file.file_size > 0);
 
+        ASSERT(g_shared->total_buckets > 0);
+        g_only_minor_max_expend_file.file_size = sizeof(uint32_t) * g_shared->total_buckets;
+        ASSERT(g_only_minor_max_expend_file.file_size > 0);
+
         g_shared->worker_sync_barrier.run_once_and_sync([]() {
             C_CALL(ftruncate(g_pretopn_file.fd, g_pretopn_file.file_size));
             C_CALL(ftruncate(g_pretopn_count_file.fd, g_pretopn_count_file.file_size));
+            C_CALL(ftruncate(g_only_minor_max_expend_file.fd, g_only_minor_max_expend_file.file_size));
 
             INFO("g_pretopn_file.file_size: %lu", g_pretopn_file.file_size);
             INFO("g_pretopn_count_file.file_size: %lu", g_pretopn_count_file.file_size);
+            INFO("g_only_minor_max_expend_file.file_size: %lu", g_only_minor_max_expend_file.file_size);
 
             ASSERT(g_shared->pretopn_plate_id_shared_counter.load() == 0);
         });
@@ -1636,6 +1663,14 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
             g_pretopn_count_file.fd,
             0);
         DEBUG("[%u] g_pretopn_count_start_ptr: %p", tid, g_pretopn_count_start_ptr);
+        
+        g_only_minor_max_expend_start_ptr = (uint32_t*)my_mmap(
+            g_only_minor_max_expend_file.file_size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE,
+            g_only_minor_max_expend_file.fd,
+            0);
+        DEBUG("[%u] g_only_minor_max_expend_start_ptr: %p", tid, g_only_minor_max_expend_start_ptr);
     }
 
 
@@ -1768,12 +1803,19 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
 #endif
 
             TRACE("build pretopn: scan minor bucket: %u", bucket_id);
+
+            uint32_t only_minor_max_expend_cent_i32 = 0;
             worker_compute_pretopn_for_plate_minor(
                 (bucket_base_orderdate - plate_base_orderdate),
                 (const uint32_t *)bucket_ptr_minor,
                 bucket_size_minor,
                 topn_count,
-                topn_ptr);
+                topn_ptr,
+                only_minor_max_expend_cent_i32);
+
+            // Write only_minor_max_expend_cent_i32
+            ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
+            g_only_minor_max_expend_start_ptr[bucket_id] = only_minor_max_expend_cent_i32;
         }
 
         std::sort(topn_ptr, topn_ptr + topn_count, std::greater<>());
@@ -2241,6 +2283,12 @@ void create_index_initialize_before_fork() noexcept
         g_pretopn_count_file.fd = C_CALL(openat(
             g_index_directory_fd,
             "pretopn_count",
+            O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
+            0666));
+
+        g_only_minor_max_expend_file.fd = C_CALL(openat(
+            g_index_directory_fd,
+            "only_minor_max_expend",
             O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
             0666));
     }
