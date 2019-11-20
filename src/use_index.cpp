@@ -169,6 +169,13 @@ void parse_queries() noexcept
         query_context_t* const ctx = g_query_contexts[query_id];
 
         new (ctx) query_context_t;
+
+        ctx->q_topn = (uint32_t)std::strtoul(g_argv_queries[4 * query_id + 3], nullptr, 10);
+        ctx->output = (char*)(/*(query_result_t*)*/ctx->results + ctx->q_topn);
+        ctx->output_length = 0;
+
+        ctx->results_length = 0;
+
         const auto it = g_mktsegment_to_mktid.find(g_argv_queries[4 * query_id + 0]);
         if (__unlikely(it == g_mktsegment_to_mktid.end())) {
             ctx->is_bad_query = true;
@@ -179,7 +186,6 @@ void parse_queries() noexcept
         ctx->q_mktid = it->second;
         ctx->q_orderdate = date_from_string</*_Unchecked*/false>(g_argv_queries[4 * query_id + 1]);
         ctx->q_shipdate = date_from_string</*_Unchecked*/false>(g_argv_queries[4 * query_id + 2]);
-        ctx->q_topn = (uint32_t)std::strtoul(g_argv_queries[4 * query_id + 3], nullptr, 10);
         if (__unlikely(ctx->q_topn == 0)) {
             ctx->is_bad_query = true;
             INFO("query #%u: q_topn == 0", query_id);
@@ -188,11 +194,6 @@ void parse_queries() noexcept
 
         INFO("query #%u: q_mktid=%u,q_orderdate=%u,q_shipdate=%u,q_topn=%u",
               query_id, ctx->q_mktid, ctx->q_orderdate, ctx->q_shipdate, ctx->q_topn);
-
-        ctx->output = (char*)(/*(query_result_t*)*/ctx->results + ctx->q_topn);
-        ctx->output_length = 0;
-
-        ctx->results_length = 0;
     }
 }
 
