@@ -125,18 +125,22 @@ public:
     }
 };
 
+#pragma pack(push, 4)
 struct query_result_t {
-    date_t orderdate;
     uint32_t orderkey;
     uint32_t total_expend_cent;
+    date_t orderdate;
 
     __always_inline
     bool operator >(const query_result_t& other) const noexcept {
-        if (total_expend_cent > other.total_expend_cent) return true;
-        if (total_expend_cent < other.total_expend_cent) return false;
-        return (orderkey > other.orderkey);
+        //if (total_expend_cent > other.total_expend_cent) return true;
+        //if (total_expend_cent < other.total_expend_cent) return false;
+        //return (orderkey > other.orderkey);
+        return *(uint64_t*)this > *(uint64_t*)(&other);
     }
 };
+static_assert(sizeof(query_result_t) == 12);
+#pragma pack(pop)
 
 
 

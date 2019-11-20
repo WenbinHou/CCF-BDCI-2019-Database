@@ -90,23 +90,29 @@ static void generate_query_output(query_context_t& query) noexcept
     memcpy(output, header, std::size(header) - 1);
     output_length = std::size(header) - 1;
 
-    const auto append_u32 = [&](const uint32_t n) noexcept {
-        ASSERT(n > 0);
-        std::string str_n = std::to_string(n);
-        memcpy(output + output_length, str_n.data(), str_n.size());
-        output_length += str_n.size();
+    const auto append_u32 = [&](uint32_t n) __attribute__((always_inline)) noexcept {
+        char buffer[10];
+        size_t pos = std::size(buffer);
+        do {
+            buffer[--pos] = (char)('0' + n % 10);
+            n /= 10;
+        } while(n > 0);
+
+        ASSERT(pos < std::size(buffer));
+        memcpy(output + output_length, &buffer[pos], std::size(buffer) - pos);
+        output_length += std::size(buffer) - pos;
     };
-    const auto append_u32_width2 = [&](const uint32_t n) noexcept {
+    const auto append_u32_width2 = [&](const uint32_t n) __attribute__((always_inline)) noexcept {
         ASSERT(n <= 99);
         output[output_length++] = (char)('0' + n / 10);
         output[output_length++] = (char)('0' + n % 10);
     };
-    const auto append_u32_width4 = [&](const uint32_t n) noexcept {
+    const auto append_u32_width4 = [&](const uint32_t n) __attribute__((always_inline)) noexcept {
         ASSERT(n <= 9999);
         output[output_length++] = (char)('0' + (n       ) / 1000);
         output[output_length++] = (char)('0' + (n % 1000) / 100);
         output[output_length++] = (char)('0' + (n % 100 ) / 10);
-        output[output_length++] = (char)('0' + (n % 10 )  / 1);
+        output[output_length++] = (char)('0' + (n % 10  ) / 1);
     };
 
     for (uint32_t i = 0; i < query.results_length; ++i) {
