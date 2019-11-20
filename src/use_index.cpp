@@ -1210,7 +1210,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
             void* const mapped_ptr = mmap(
                 ptr,
-                bucket_size_major,
+                g_shared->meta.max_bucket_size_major,  // NOTE: do NOT use bucket_size_major for better performance
                 PROT_READ,
                 MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
                 g_holder_files_major_fd[holder_id],
@@ -1246,7 +1246,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
             void* const mapped_ptr = mmap(
                 ptr,
-                bucket_size_major,
+                g_shared->meta.max_bucket_size_major,  // NOTE: do NOT use bucket_size_major for better performance
                 PROT_READ,
                 MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
                 g_holder_files_major_fd[holder_id],
@@ -1284,7 +1284,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
             void* const mapped_ptr = mmap(
                 ptr,
-                bucket_size_major,
+                g_shared->meta.max_bucket_size_major,  // NOTE: do NOT use bucket_size_major for better performance
                 PROT_READ,
                 MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
                 g_holder_files_major_fd[holder_id],
@@ -1322,7 +1322,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
             void* const mapped_ptr = mmap(
                 ptr,
-                bucket_size_major,
+                g_shared->meta.max_bucket_size_major,  // NOTE: do NOT use bucket_size_major for better performance
                 PROT_READ,
                 MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
                 g_holder_files_major_fd[holder_id],
