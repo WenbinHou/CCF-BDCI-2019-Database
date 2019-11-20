@@ -277,6 +277,7 @@ void scan_minor_index_nocheck_orderdate_maybe_check_shipdate(
             continue;
         }
 
+
         //
         // NOTE:
         // minor-order to sum:
@@ -330,6 +331,8 @@ void scan_minor_index_nocheck_orderdate_maybe_check_shipdate(
                         std::pop_heap(results, results + result_length, std::greater<>()); \
                         results[result_length-1] = tmp; \
                         std::push_heap(results, results + result_length, std::greater<>()); \
+                        /* curr_min_expend_cent hopefully improves performance */ \
+                        curr_min_expend_cent = _mm256_set1_epi32(results[0].total_expend_cent); \
                     } \
                 } \
             }
@@ -348,7 +351,6 @@ void scan_minor_index_nocheck_orderdate_maybe_check_shipdate(
         const uint32_t orderdate_diff = *(p + 3) >> 30;
         const date_t orderdate = bucket_base_orderdate + orderdate_diff;
         const uint32_t orderkey = *(p + 3) & ~0xC0000000U;
-        p += 4;
 
         uint32_t total_expend_cent;
         if constexpr (_CheckShipdateDiff) {
@@ -360,6 +362,7 @@ void scan_minor_index_nocheck_orderdate_maybe_check_shipdate(
         else {
             total_expend_cent = (p[0] & 0x00FFFFFF) + (p[1] & 0x00FFFFFF) + (p[2] & 0x00FFFFFF);
         }
+        p += 4;
 
         _CHECK_RESULT();
     }
@@ -401,7 +404,6 @@ void scan_minor_index_check_orderdate_maybe_check_shipdate(
         }
 
         const uint32_t orderkey = *(p + 3) & ~0xC0000000U;
-        p += 4;
 
         uint32_t total_expend_cent;
         if constexpr (_CheckShipdateDiff) {
@@ -413,6 +415,7 @@ void scan_minor_index_check_orderdate_maybe_check_shipdate(
         else {
             total_expend_cent = (p[0] & 0x00FFFFFF) + (p[1] & 0x00FFFFFF) + (p[2] & 0x00FFFFFF);
         }
+        p += 4;
 
         if (total_expend_cent > 0) {
             query_result_t tmp;
@@ -420,7 +423,7 @@ void scan_minor_index_check_orderdate_maybe_check_shipdate(
             tmp.orderkey = orderkey;
             tmp.total_expend_cent = total_expend_cent;
 
-            if (result_length < q_topn) {
+            if (__unlikely(result_length < q_topn)) {
                 results[result_length++] = tmp;
                 if (__unlikely(result_length == q_topn)) {
                     std::make_heap(results, results + result_length, std::greater<>());
@@ -429,7 +432,7 @@ void scan_minor_index_check_orderdate_maybe_check_shipdate(
             else {
                 ASSERT(result_length > 0);
                 ASSERT(result_length == q_topn);
-                if (tmp > results[0]) {
+                if (__unlikely(tmp > results[0])) {
                     std::pop_heap(results, results + result_length, std::greater<>());
                     results[result_length-1] = tmp;
                     std::push_heap(results, results + result_length, std::greater<>());
@@ -1350,6 +1353,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
                     ctx->q_shipdate);
             }
         }
+
 
 
         //
