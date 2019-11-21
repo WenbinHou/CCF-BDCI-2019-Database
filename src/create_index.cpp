@@ -50,9 +50,11 @@ namespace
     posix_shm_t<uint32_t> g_orderkey_to_custkey { };
 
     void* g_items_buffer_major_start_ptr = nullptr;  // [index_tls_buffer_count][CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR]
+    void* g_items_buffer_mid_start_ptr = nullptr;  // [index_tls_buffer_count][CONFIG_INDEX_TLS_BUFFER_SIZE_MID]
     void* g_items_buffer_minor_start_ptr = nullptr;  // [index_tls_buffer_count][CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR]
 
     std::atomic_uint64_t* g_buckets_endoffset_major = nullptr;  // [g_shared->total_buckets]
+    std::atomic_uint64_t* g_buckets_endoffset_mid = nullptr;  // [g_shared->total_buckets]
     std::atomic_uint64_t* g_buckets_endoffset_minor = nullptr;  // [g_shared->total_buckets]
 }
 
@@ -764,7 +766,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     uint32_t max_orderdate_shipdate_diff = 0;
 
     //
-    // Allocate for g_items_buffer_major_start_ptr, g_items_buffer_minor_start_ptr
+    // Allocate for g_items_buffer_major_start_ptr, g_items_buffer_mid_start_ptr, g_items_buffer_minor_start_ptr
     //
     {
         ASSERT(g_shared->total_buckets > 0);
@@ -776,6 +778,10 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
         g_items_buffer_major_start_ptr = mmap_allocate_page2m(index_tls_buffer_count * CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
         ASSERT(g_items_buffer_major_start_ptr != nullptr);
         DEBUG("[%u] g_items_buffer_major_start_ptr: %p", tid, g_items_buffer_major_start_ptr);
+
+        g_items_buffer_mid_start_ptr = mmap_allocate_page2m(index_tls_buffer_count * CONFIG_INDEX_TLS_BUFFER_SIZE_MID);
+        ASSERT(g_items_buffer_mid_start_ptr != nullptr);
+        DEBUG("[%u] g_items_buffer_mid_start_ptr: %p", tid, g_items_buffer_mid_start_ptr);
 
         // Allocate for g_items_buffer_minor_start_ptr
         g_items_buffer_minor_start_ptr = mmap_allocate_page2m(index_tls_buffer_count * CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR);
@@ -789,15 +795,19 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
         ASSERT(g_shared->total_buckets > 0);
 
         ASSERT(g_endoffset_file_major.fd > 0);
+        ASSERT(g_endoffset_file_mid.fd > 0);
         ASSERT(g_endoffset_file_minor.fd > 0);
 
         g_endoffset_file_major.file_size = sizeof(uint64_t) * g_shared->total_buckets;
+        g_endoffset_file_mid.file_size = sizeof(uint64_t) * g_shared->total_buckets;
         g_endoffset_file_minor.file_size = sizeof(uint64_t) * g_shared->total_buckets;
         ASSERT(g_endoffset_file_major.file_size > 0);
+        ASSERT(g_endoffset_file_mid.file_size > 0);
         ASSERT(g_endoffset_file_minor.file_size > 0);
 
         g_shared->worker_sync_barrier.run_once_and_sync([]() {
             C_CALL(ftruncate(g_endoffset_file_major.fd, g_endoffset_file_major.file_size));
+            C_CALL(ftruncate(g_endoffset_file_mid.fd, g_endoffset_file_mid.file_size));
             C_CALL(ftruncate(g_endoffset_file_minor.fd, g_endoffset_file_minor.file_size));
         });
 
@@ -808,6 +818,14 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             g_endoffset_file_major.fd,
             0);
         DEBUG("[%u] g_buckets_endoffset_major: %p", tid, g_buckets_endoffset_major);
+
+        g_buckets_endoffset_mid = (std::atomic_uint64_t*)my_mmap(
+            g_endoffset_file_mid.file_size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE,
+            g_endoffset_file_mid.fd,
+            0);
+        DEBUG("[%u] g_buckets_endoffset_mid: %p", tid, g_buckets_endoffset_mid);
 
         g_buckets_endoffset_minor = (std::atomic_uint64_t*)my_mmap(
             g_endoffset_file_minor.file_size,
@@ -839,6 +857,21 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             }
         }
 
+        const uint64_t holder_mid_file_size = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * g_shared->buckets_per_holder;
+        while (true) {
+            const uint32_t holder_id = g_shared->next_truncate_holder_mid_id++;
+            if (holder_id >= CONFIG_INDEX_HOLDER_COUNT) break;
+
+            ASSERT(g_holder_files_mid_fd[holder_id] > 0);
+            C_CALL(ftruncate(g_holder_files_mid_fd[holder_id], holder_mid_file_size));
+
+            const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+            const uint32_t end_bucket_id = (holder_id + 1) * g_shared->buckets_per_holder;
+            for (uint32_t bucket_id = begin_bucket_id; bucket_id < end_bucket_id; ++bucket_id) {
+                g_buckets_endoffset_mid[bucket_id] = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * (bucket_id - begin_bucket_id);
+            }
+        }
+
         const uint64_t holder_minor_file_size = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR * g_shared->buckets_per_holder;
         while (true) {
             const uint32_t holder_id = g_shared->next_truncate_holder_minor_id++;
@@ -858,6 +891,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 
 #define _CALC_START_PTR_MAJOR(_BufferIndex) \
     ((void*)((uintptr_t)g_items_buffer_major_start_ptr + (size_t)(_BufferIndex) * CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR))
+#define _CALC_START_PTR_MID(_BufferIndex) \
+    ((void*)((uintptr_t)g_items_buffer_mid_start_ptr + (size_t)(_BufferIndex) * CONFIG_INDEX_TLS_BUFFER_SIZE_MID))
 #define _CALC_START_PTR_MINOR(_BufferIndex) \
     ((void*)((uintptr_t)g_items_buffer_minor_start_ptr + (size_t)(_BufferIndex) * CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR))
 
@@ -865,6 +900,11 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     for (uint32_t bucket_id = 0; bucket_id < g_shared->total_buckets; ++bucket_id) {
         bucket_data_major[bucket_id].iov_len = 0;
         bucket_data_major[bucket_id].iov_base = _CALC_START_PTR_MAJOR(bucket_id);
+    }
+    iovec* const bucket_data_mid = new iovec[g_shared->total_buckets];
+    for (uint32_t bucket_id = 0; bucket_id < g_shared->total_buckets; ++bucket_id) {
+        bucket_data_mid[bucket_id].iov_len = 0;
+        bucket_data_mid[bucket_id].iov_base = _CALC_START_PTR_MID(bucket_id);
     }
     iovec* const bucket_data_minor = new iovec[g_shared->total_buckets];
     for (uint32_t bucket_id = 0; bucket_id < g_shared->total_buckets; ++bucket_id) {
@@ -886,6 +926,28 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
         const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
         const size_t cnt = C_CALL(pwrite(
             g_holder_files_major_fd[holder_id],
+            vec.iov_base,
+            vec.iov_len,
+            file_offset));
+        CHECK(cnt == vec.iov_len);
+
+        // Fetch new last_data
+        vec.iov_len = 0;
+    };
+
+    const auto maybe_submit_for_pwrite_mid = [&](/*inout*/ iovec& vec, /*in*/ uint32_t bucket_id) {
+        //ASSERT(bucket_id < index_tls_buffer_count, "bucket_id: %u", bucket_id);
+        ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MID);
+        ASSERT(vec.iov_len > 0);
+
+        // Do pwrite
+        const uint64_t file_offset = g_buckets_endoffset_mid[bucket_id].fetch_add(vec.iov_len);
+        // If not final writing:
+        //  ASSERT(vec.iov_len == CONFIG_INDEX_TLS_BUFFER_SIZE_MID);
+        //  ASSERT(file_offset % CONFIG_INDEX_TLS_BUFFER_SIZE_MID == 0, "bucket_id: %u, file_offset: %lu", bucket_id, file_offset);
+        const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+        const size_t cnt = C_CALL(pwrite(
+            g_holder_files_mid_fd[holder_id],
             vec.iov_base,
             vec.iov_len,
             file_offset));
@@ -997,7 +1059,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             ASSERT(last_item_count <= COUNT_BASE + 7);
             last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
-            if (last_item_count >= COUNT_BASE + 5) {  // 8,7,6,5
+            if (last_item_count >= COUNT_BASE + 7) {  // 8,7
                 ASSERT(last_item_count <= COUNT_BASE + 8);
 
                 iovec& vec = bucket_data_major[last_bucket_id];
@@ -1016,8 +1078,27 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                     maybe_submit_for_pwrite_major(vec, last_bucket_id);
                 }
             }
+            else if (last_item_count >= COUNT_BASE + 5) {  // 6,5
+                ASSERT(last_item_count <= COUNT_BASE + 6);
+
+                iovec& vec = bucket_data_mid[last_bucket_id];
+                ASSERT(vec.iov_len < CONFIG_INDEX_TLS_BUFFER_SIZE_MID);
+                ASSERT(vec.iov_base == _CALC_START_PTR_MID(last_bucket_id));
+                static_assert(CONFIG_INDEX_TLS_BUFFER_SIZE_MID % (8 * sizeof(uint32_t)) == 0);
+
+                memcpy(
+                    (void*)((uintptr_t)vec.iov_base + vec.iov_len),
+                    last_items + last_item_count - 8,
+                    8 * sizeof(uint32_t));
+                vec.iov_len += 8 * sizeof(uint32_t);
+
+                ASSERT(vec.iov_len <= CONFIG_INDEX_TLS_BUFFER_SIZE_MID);
+                if (vec.iov_len == CONFIG_INDEX_TLS_BUFFER_SIZE_MID) {
+                    maybe_submit_for_pwrite_mid(vec, last_bucket_id);
+                }
+            }
             else {  // 4,3,2
-                ASSERT(last_item_count < COUNT_BASE + 5);
+                ASSERT(last_item_count <= COUNT_BASE + 4);
                 ASSERT(last_item_count >= COUNT_BASE + 2);
 
                 iovec& vec = bucket_data_minor[last_bucket_id];
@@ -1213,6 +1294,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
     }
 
     // For each bucket, write remaining buffer (if exists) to file
+    INFO("[%u] write remaining buffer (if exists) to file", tid);
     uint32_t bucket_ids_to_shuffle[g_shared->total_buckets];
     for (uint32_t i = 0; i < g_shared->total_buckets; ++i) {
         bucket_ids_to_shuffle[i] = i;
@@ -1226,6 +1308,11 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             maybe_submit_for_pwrite_major(vec_major, bucket_id);
         }
 
+        iovec& vec_mid = bucket_data_mid[bucket_id];
+        if (vec_mid.iov_len > 0) {
+            maybe_submit_for_pwrite_mid(vec_mid, bucket_id);
+        }
+
         iovec& vec_minor = bucket_data_minor[bucket_id];
         if (vec_minor.iov_len > 0) {
             maybe_submit_for_pwrite_minor(vec_minor, bucket_id);
@@ -1235,7 +1322,8 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
 #if ENABLE_ASSERTION
     for (uint32_t i = 0; i < g_shared->total_buckets; ++i) {
         const uint32_t bucket_id = bucket_ids_to_shuffle[i];
-        //TODO: ASSERT(bucket_data_major[bucket_id].iov_len == 0);
+        ASSERT(bucket_data_major[bucket_id].iov_len == 0);
+        ASSERT(bucket_data_mid[bucket_id].iov_len == 0);
         ASSERT(bucket_data_minor[bucket_id].iov_len == 0);
     }
 #endif
@@ -1302,7 +1390,7 @@ static void worker_compute_pretopn_for_plate_major(
 
 #define _CHECK_RESULT(N) \
         do { \
-            ASSERT(total_expend_cent##N > 0, "orderkey" #N ": %u", orderkey##N); \
+            ASSERT(total_expend_cent##N > 0); \
             ASSERT(total_expend_cent##N < (1U << 28)); \
             if (topn_count < CONFIG_EXPECT_MAX_TOPN) { \
                 const uint32_t orderkey##N = *(p + 7) & ~0xC0000000U; \
@@ -1393,8 +1481,179 @@ static void worker_compute_pretopn_for_plate_major(
         {
             ASSERT(orderkey > 0, "");
             ASSERT(orderkey < (1U << 30));
-            ASSERT(orderkey <= g_max_orderkey, "orderkey" #N " too large: %u", orderkey);
-            ASSERT(total_expend_cent > 0, "orderkey" #N ": %u", orderkey);
+            ASSERT(orderkey <= g_max_orderkey, "orderkey too large: %u", orderkey);
+            ASSERT(total_expend_cent > 0, "orderkey: %u", orderkey);
+            ASSERT(total_expend_cent < (1U << 28));
+            ASSERT(plate_orderdate_diff >= 0);
+            ASSERT(plate_orderdate_diff < (1 << 6));
+            const uint64_t value = (uint64_t)(total_expend_cent) << 36 | (uint64_t)(orderkey) << 6 | (plate_orderdate_diff);
+
+            if (__unlikely(topn_count < CONFIG_EXPECT_MAX_TOPN)) {
+                topn_ptr[topn_count++] = value;
+                if (__unlikely(topn_count == CONFIG_EXPECT_MAX_TOPN)) {
+                    std::make_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                }
+            }
+            else {
+                if (value > topn_ptr[0]) {
+                    std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                    topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value;
+                    std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                }
+            }
+        }
+    }
+}
+
+
+static void worker_compute_pretopn_for_plate_mid(
+    /*in*/ const date_t bucket_base_orderdate_minus_plate_base_orderdate,
+    /*in*/ const void* const bucket_ptr_mid,
+    /*in*/ const uint64_t bucket_size_mid,
+    /*inout*/ uint32_t& topn_count,
+    /*inout*/ uint64_t* const topn_ptr,
+    /*inout*/ uint32_t& only_mid_max_expend_cent_i32) noexcept
+{
+    ASSERT(bucket_base_orderdate_minus_plate_base_orderdate >= 0);
+    ASSERT(bucket_base_orderdate_minus_plate_base_orderdate % CONFIG_ORDERDATES_PER_BUCKET == 0);
+    ASSERT((uint32_t)bucket_base_orderdate_minus_plate_base_orderdate < CONFIG_ORDERDATES_PER_BUCKET * BUCKETS_PER_PLATE);
+    ASSERT(bucket_ptr_mid != nullptr);
+    ASSERT((uintptr_t)bucket_ptr_mid % PAGE_SIZE == 0);
+    ASSERT(bucket_size_mid > 0);
+    ASSERT(bucket_size_mid % (sizeof(uint32_t) * 8) == 0);
+    ASSERT(topn_count <= CONFIG_EXPECT_MAX_TOPN);
+    ASSERT(topn_ptr != nullptr);
+    ASSERT((uintptr_t)topn_ptr % PAGE_SIZE == 0);
+
+#if ENABLE_ASSERTION
+    {
+        const uint32_t* p = (const uint32_t*)bucket_ptr_mid;
+        const uint32_t* const end = (const uint32_t*)((uintptr_t)p + bucket_size_mid);
+        while (p < end) {
+            const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
+            p += 8;
+
+            ASSERT(orderkey > 0, "bucket_id=%%u, bucket_size_mid=%lu, offset=%lu",
+            /*bucket_id,*/ bucket_size_mid, (end - p) * sizeof(uint32_t));
+        }
+    }
+#endif
+
+    const __m256i expend_mask = _mm256_set_epi32(
+        0x00000000, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
+
+    const uint32_t* p = (const uint32_t*)bucket_ptr_mid;
+    const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr_mid + bucket_size_mid);
+    const uint32_t* const end_align32 = p + __align_down(bucket_size_mid / sizeof(uint32_t), 32);
+    ASSERT((uintptr_t)p % 32 == 0);
+    ASSERT((uintptr_t)end_align32 % 32 == 0);
+    ASSERT(end_align32 <= end);
+
+
+#define _CHECK_RESULT(N) \
+        do { \
+            ASSERT(total_expend_cent##N > 0); \
+            ASSERT(total_expend_cent##N < (1U << 28)); \
+            if (total_expend_cent##N > only_mid_max_expend_cent_i32) { \
+                only_mid_max_expend_cent_i32 = total_expend_cent##N; \
+            } \
+            \
+            if (topn_count < CONFIG_EXPECT_MAX_TOPN) { \
+                const uint32_t orderkey##N = *(p + 7) & ~0xC0000000U; \
+                const uint32_t bucket_orderdate_diff##N = *(p + 7) >> 30; \
+                const date_t plate_orderdate_diff##N = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff##N; \
+                \
+                ASSERT(orderkey##N > 0); \
+                ASSERT(orderkey##N < (1U << 30)); \
+                ASSERT(orderkey##N <= g_max_orderkey, "orderkey" #N " too large: %u", orderkey##N); \
+                ASSERT(plate_orderdate_diff##N >= 0); \
+                ASSERT(plate_orderdate_diff##N < (1 << 6)); \
+                const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(orderkey##N) << 6 | (plate_orderdate_diff##N); \
+                \
+                topn_ptr[topn_count++] = value; \
+                if (__unlikely(topn_count == CONFIG_EXPECT_MAX_TOPN)) { \
+                    std::make_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                } \
+            } \
+            else { \
+                if (total_expend_cent##N >= (uint32_t)(topn_ptr[0] >> 36)) { \
+                    const uint32_t orderkey##N = *(p + 7) & ~0xC0000000U; \
+                    const uint32_t bucket_orderdate_diff##N = *(p + 7) >> 30; \
+                    const date_t plate_orderdate_diff##N = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff##N; \
+                    \
+                    ASSERT(orderkey##N > 0); \
+                    ASSERT(orderkey##N < (1U << 30)); \
+                    ASSERT(orderkey##N <= g_max_orderkey, "orderkey" #N " too large: %u", orderkey##N); \
+                    ASSERT(plate_orderdate_diff##N >= 0); \
+                    ASSERT(plate_orderdate_diff##N < (1 << 6)); \
+                    const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(orderkey##N) << 6 | (plate_orderdate_diff##N); \
+                    \
+                    if (value > topn_ptr[0]) { \
+                        std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                        topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value; \
+                        std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                    } \
+                } \
+            } \
+        } while(false)
+
+    while (p < end_align32) {
+        const __m256i items1 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        const __m256i items2 = _mm256_and_si256(_mm256_load_si256((__m256i*)p + 1), expend_mask);
+        const __m256i items3 = _mm256_and_si256(_mm256_load_si256((__m256i*)p + 2), expend_mask);
+        const __m256i items4 = _mm256_and_si256(_mm256_load_si256((__m256i*)p + 3), expend_mask);
+
+        // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
+        const __m256i tmp1 = _mm256_hadd_epi32(items1, items2);
+        const __m256i tmp2 = _mm256_hadd_epi32(items3, items4);
+        const __m256i tmp3 = _mm256_hadd_epi32(tmp1, tmp2);
+        const __m128i tmp3lo = _mm256_castsi256_si128(tmp3);
+        const __m128i tmp3hi = _mm256_extracti128_si256(tmp3, 1);
+        const __m128i sum = _mm_add_epi32(tmp3hi, tmp3lo);
+
+        const uint32_t total_expend_cent1 = _mm_extract_epi32(sum, 0);
+        const uint32_t total_expend_cent2 = _mm_extract_epi32(sum, 1);
+        const uint32_t total_expend_cent3 = _mm_extract_epi32(sum, 2);
+        const uint32_t total_expend_cent4 = _mm_extract_epi32(sum, 3);
+
+        _CHECK_RESULT(1);
+        p += 8;
+
+        _CHECK_RESULT(2);
+        p += 8;
+
+        _CHECK_RESULT(3);
+        p += 8;
+
+        _CHECK_RESULT(4);
+        p += 8;
+#undef _CHECK_RESULT
+    }
+
+    ASSERT(p == end_align32);
+    while (p < end) {
+        const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
+        ASSERT(orderkey > 0);
+        const uint32_t bucket_orderdate_diff = *(p + 7) >> 30;
+        const date_t plate_orderdate_diff = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff;
+        const __m256i items = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        p += 8;
+
+        __m256i sum = _mm256_hadd_epi32(items, items);
+        sum = _mm256_hadd_epi32(sum, sum);
+        const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
+        ASSERT(total_expend_cent > 0);
+
+        if (total_expend_cent > only_mid_max_expend_cent_i32) {
+            only_mid_max_expend_cent_i32 = total_expend_cent;
+        }
+
+        {
+            ASSERT(orderkey > 0, "");
+            ASSERT(orderkey < (1U << 30));
+            ASSERT(orderkey <= g_max_orderkey, "orderkey too large: %u", orderkey);
+            ASSERT(total_expend_cent > 0, "orderkey: %u", orderkey);
             ASSERT(total_expend_cent < (1U << 28));
             ASSERT(plate_orderdate_diff >= 0);
             ASSERT(plate_orderdate_diff < (1 << 6));
@@ -1660,16 +1919,20 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
         ASSERT(g_pretopn_count_file.file_size > 0);
 
         ASSERT(g_shared->total_buckets > 0);
+        g_only_mid_max_expend_file.file_size = sizeof(uint32_t) * g_shared->total_buckets;
+        ASSERT(g_only_mid_max_expend_file.file_size > 0);
         g_only_minor_max_expend_file.file_size = sizeof(uint32_t) * g_shared->total_buckets;
         ASSERT(g_only_minor_max_expend_file.file_size > 0);
 
         g_shared->worker_sync_barrier.run_once_and_sync([]() {
             C_CALL(ftruncate(g_pretopn_file.fd, g_pretopn_file.file_size));
             C_CALL(ftruncate(g_pretopn_count_file.fd, g_pretopn_count_file.file_size));
+            C_CALL(ftruncate(g_only_mid_max_expend_file.fd, g_only_mid_max_expend_file.file_size));
             C_CALL(ftruncate(g_only_minor_max_expend_file.fd, g_only_minor_max_expend_file.file_size));
 
             INFO("g_pretopn_file.file_size: %lu", g_pretopn_file.file_size);
             INFO("g_pretopn_count_file.file_size: %lu", g_pretopn_count_file.file_size);
+            INFO("g_only_mid_max_expend_file.file_size: %lu", g_only_mid_max_expend_file.file_size);
             INFO("g_only_minor_max_expend_file.file_size: %lu", g_only_minor_max_expend_file.file_size);
 
             ASSERT(g_shared->pretopn_plate_id_shared_counter.load() == 0);
@@ -1691,6 +1954,14 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
             0);
         DEBUG("[%u] g_pretopn_count_start_ptr: %p", tid, g_pretopn_count_start_ptr);
         
+        g_only_mid_max_expend_start_ptr = (uint32_t*)my_mmap(
+            g_only_mid_max_expend_file.file_size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE,
+            g_only_mid_max_expend_file.fd,
+            0);
+        DEBUG("[%u] g_only_mid_max_expend_start_ptr: %p", tid, g_only_mid_max_expend_start_ptr);
+        
         g_only_minor_max_expend_start_ptr = (uint32_t*)my_mmap(
             g_only_minor_max_expend_file.file_size,
             PROT_READ | PROT_WRITE,
@@ -1702,9 +1973,9 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
 
 
     void* const bucket_ptr_major = mmap_reserve_space(CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR);
+    void* const bucket_ptr_mid = mmap_reserve_space(CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID);
     void* const bucket_ptr_minor = mmap_reserve_space(CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR);
 
-    // For each bucket, write remaining buffer (if exists) to file
     uint32_t plate_ids_to_shuffle[g_shared->total_plates];
     for (uint32_t i = 0; i < g_shared->total_plates; ++i) {
         plate_ids_to_shuffle[i] = i;
@@ -1784,6 +2055,69 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
 
 
         //
+        // Scan mid buckets
+        //
+        for (uint32_t bucket_id = plate_base_bucket_id; bucket_id < plate_base_bucket_id + BUCKETS_PER_PLATE; ++bucket_id) {
+            if (calc_bucket_mktid(bucket_id) != base_mktid) break;
+            TRACE("pretopn for mid bucket_id: %u", bucket_id);
+
+#if ENABLE_ASSERTION
+            ASSERT(calc_plate_id(bucket_id) == plate_id);
+#endif
+
+            const date_t bucket_base_orderdate = calc_bucket_base_orderdate_by_bucket_id(bucket_id);
+            ASSERT(bucket_base_orderdate >= plate_base_orderdate);
+            ASSERT(bucket_base_orderdate < plate_base_orderdate + CONFIG_TOPN_DATES_PER_PLATE);
+            ASSERT((bucket_base_orderdate - plate_base_orderdate) % CONFIG_ORDERDATES_PER_BUCKET == 0);
+
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
+            const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_mid = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * (bucket_id - begin_bucket_id);
+            const uint64_t bucket_size_mid = g_buckets_endoffset_mid[bucket_id] - bucket_start_offset_mid;
+            if (__unlikely(bucket_size_mid == 0)) continue;
+
+            void* const mapped_ptr = mmap(
+                bucket_ptr_mid,
+                bucket_size_mid,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_mid_fd[holder_id],
+                bucket_start_offset_mid);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == bucket_ptr_mid);
+
+#if ENABLE_ASSERTION
+            const uint32_t* p = (uint32_t*)bucket_ptr_mid;
+            const uint32_t* end = (uint32_t*)((uintptr_t)p + bucket_size_mid);
+            while (p < end) {
+                const uint32_t orderkey = *(p + 3) & ~0xC0000000U;
+                p += 4;
+
+                ASSERT(orderkey > 0, "bucket_id=%u, bucket_size_mid=%lu, offset=%lu",
+                    bucket_id, bucket_size_mid, (end - p) * sizeof(uint32_t));
+            }
+#endif
+
+            TRACE("build pretopn: scan mid bucket: %u", bucket_id);
+
+            uint32_t only_mid_max_expend_cent_i32 = 0;
+            worker_compute_pretopn_for_plate_mid(
+                (bucket_base_orderdate - plate_base_orderdate),
+                (const uint32_t *)bucket_ptr_mid,
+                bucket_size_mid,
+                topn_count,
+                topn_ptr,
+                only_mid_max_expend_cent_i32);
+
+            // Write only_mid_max_expend_cent_i32
+            ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
+            g_only_mid_max_expend_start_ptr[bucket_id] = only_mid_max_expend_cent_i32;
+        }
+
+        
+        //
         // Scan minor buckets
         //
         for (uint32_t bucket_id = plate_base_bucket_id; bucket_id < plate_base_bucket_id + BUCKETS_PER_PLATE; ++bucket_id) {
@@ -1849,8 +2183,12 @@ static void worker_compute_pretopn([[maybe_unused]] const uint32_t tid) noexcept
     }
 
 
+    // Return space in reverse order
     C_CALL(munmap(bucket_ptr_minor, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR));
     mmap_return_space(bucket_ptr_minor, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR);
+
+    C_CALL(munmap(bucket_ptr_mid, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID));
+    mmap_return_space(bucket_ptr_mid, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID);
 
     C_CALL(munmap(bucket_ptr_major, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR));
     mmap_return_space(bucket_ptr_major, CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR);
@@ -1955,6 +2293,7 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
 
         g_shared->worker_sync_barrier.sync_and_run_once([]() {
             uint64_t max_bucket_size_major = 0;
+            uint64_t max_bucket_size_mid = 0;
             uint64_t max_bucket_size_minor = 0;
 
             for (uint32_t bucket_id = 0; bucket_id < g_shared->total_buckets; ++bucket_id) {
@@ -1967,6 +2306,12 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
                     max_bucket_size_major = bucket_size_major;
                 }
 
+                const uintptr_t bucket_start_offset_mid = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * (bucket_id - begin_bucket_id);
+                const uint64_t bucket_size_mid = g_buckets_endoffset_mid[bucket_id] - bucket_start_offset_mid;
+                if (max_bucket_size_mid < bucket_size_mid) {
+                    max_bucket_size_mid = bucket_size_mid;
+                }
+                
                 const uintptr_t bucket_start_offset_minor = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR * (bucket_id - begin_bucket_id);
                 const uint64_t bucket_size_minor = g_buckets_endoffset_minor[bucket_id] - bucket_start_offset_minor;
                 if (max_bucket_size_minor < bucket_size_minor) {
@@ -1975,12 +2320,15 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
             }
 
             INFO("max_bucket_size_major: %lu", max_bucket_size_major);
+            INFO("max_bucket_size_mid: %lu", max_bucket_size_mid);
             INFO("max_bucket_size_minor: %lu", max_bucket_size_minor);
 
             ASSERT(max_bucket_size_major < CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR);
+            ASSERT(max_bucket_size_mid < CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID);
             ASSERT(max_bucket_size_minor < CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR);
 
             g_shared->meta.max_bucket_size_major = max_bucket_size_major;
+            g_shared->meta.max_bucket_size_mid = max_bucket_size_mid;
             g_shared->meta.max_bucket_size_minor = max_bucket_size_minor;
 
 
@@ -2010,247 +2358,6 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
         worker_compute_pretopn(tid);
         g_shared->worker_sync_barrier.sync();
     }
-
-
-    //
-    // Test query
-    //
-#if ENABLE_ASSERTION
-    if (tid == 0) {
-        constexpr const uint32_t TOPN = 5;
-        std::vector<query_result_t> results;
-        results.reserve(TOPN);
-
-        uint32_t mktid;
-        for (mktid = 0; mktid < g_shared->mktid_count; ++mktid) {
-            if (std::string_view(g_shared->all_mktsegments[mktid].name, g_shared->all_mktsegments[mktid].length) == "BUILDING") {
-                break;
-            }
-        }
-        CHECK(mktid < g_shared->mktid_count);
-
-        const date_t q_orderdate = date_from_string<false>("1998-08-02");
-        const date_t q_shipdate = date_from_string<false>("1992-01-02");
-
-        uint32_t* const ptr = (uint32_t*)mmap_reserve_space(1048576 * 64);
-        for (date_t scan_orderdate = MIN_TABLE_DATE; scan_orderdate < q_orderdate; ++scan_orderdate) {
-            const date_t base_orderdate = calc_bucket_base_orderdate(scan_orderdate);
-            if (scan_orderdate != base_orderdate) continue;
-
-            const uint32_t bucket_id = calc_bucket_index(mktid, base_orderdate);
-            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
-            const uint32_t begin_bucket_id = holder_id * g_shared->buckets_per_holder;
-
-            const uintptr_t bucket_start_offset_major = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR * (bucket_id - begin_bucket_id);
-            const uint64_t bucket_size_major = g_buckets_endoffset_major[bucket_id] - bucket_start_offset_major;
-            if (bucket_size_major == 0) continue;
-
-            void* const mapped_ptr = mmap(
-                ptr,
-                bucket_size_major,
-                PROT_READ,
-                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
-                g_holder_files_major_fd[holder_id],
-                bucket_start_offset_major);
-            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
-            ASSERT(mapped_ptr == ptr);
-
-            ASSERT(bucket_size_major % (8 * sizeof(uint32_t)) == 0);
-
-            const __m256i expend_mask = _mm256_set_epi32(
-                0x00000000, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
-                0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
-            __m256i greater_than_value;
-            if (base_orderdate > q_shipdate) {
-                greater_than_value = _mm256_set1_epi32(0);  // TODO: dummy. remove!
-            }
-            else if (q_shipdate - base_orderdate >= 128) {
-                greater_than_value = _mm256_set1_epi32(0x7FFFFFFF);  // TODO: dummy. remove!
-            }
-            else {  // base_orderdate <= q_shipdate < base_orderdate + 128
-                greater_than_value = _mm256_set1_epi32((q_shipdate - base_orderdate) << 24 | 0x00FFFFFF);  // TODO: dummy. remove!
-            }
-
-            uint32_t* p = ptr;
-            const uint32_t* const end = (uint32_t*)((uintptr_t)ptr + bucket_size_major);
-            const uint32_t* const end_align32 = p + __align_down(bucket_size_major / sizeof(uint32_t), 32);
-            while (p < end_align32) {
-                const uint32_t orderdate_diff1 = *(p + 7) >> 30;
-                const date_t orderdate1 = base_orderdate + orderdate_diff1;
-                const uint32_t orderkey1 = *(p + 7) & ~0xC0000000U;
-                __m256i items1 = _mm256_load_si256((__m256i*)p);
-                p += 8;
-                const __m256i gt_mask1 = _mm256_cmpgt_epi32(items1, greater_than_value);
-                items1 = _mm256_and_si256(items1, gt_mask1);
-                items1 = _mm256_and_si256(items1, expend_mask);
-
-                const uint32_t orderdate_diff2 = *(p + 7) >> 30;
-                const date_t orderdate2 = base_orderdate + orderdate_diff2;
-                const uint32_t orderkey2 = *(p + 7) & ~0xC0000000U;
-                __m256i items2 = _mm256_load_si256((__m256i*)p);
-                p += 8;
-                const __m256i gt_mask2 = _mm256_cmpgt_epi32(items2, greater_than_value);
-                items2 = _mm256_and_si256(items2, gt_mask2);
-                items2 = _mm256_and_si256(items2, expend_mask);
-
-                const uint32_t orderdate_diff3 = *(p + 7) >> 30;
-                const date_t orderdate3 = base_orderdate + orderdate_diff3;
-                const uint32_t orderkey3 = *(p + 7) & ~0xC0000000U;
-                __m256i items3 = _mm256_load_si256((__m256i*)p);
-                p += 8;
-                const __m256i gt_mask3 = _mm256_cmpgt_epi32(items3, greater_than_value);
-                items3 = _mm256_and_si256(items3, gt_mask3);
-                items3 = _mm256_and_si256(items3, expend_mask);
-
-                const uint32_t orderdate_diff4 = *(p + 7) >> 30;
-                const date_t orderdate4 = base_orderdate + orderdate_diff4;
-                const uint32_t orderkey4 = *(p + 7) & ~0xC0000000U;
-                __m256i items4 = _mm256_load_si256((__m256i*)p);
-                p += 8;
-                const __m256i gt_mask4 = _mm256_cmpgt_epi32(items4, greater_than_value);
-                items4 = _mm256_and_si256(items4, gt_mask4);
-                items4 = _mm256_and_si256(items4, expend_mask);
-
-                // TODO: looks for better way!
-                // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
-                const __m256i tmp1 = _mm256_hadd_epi32(items1, items2);
-                const __m256i tmp2 = _mm256_hadd_epi32(items3, items4);
-                const __m256i tmp3 = _mm256_hadd_epi32(tmp1, tmp2);
-                const __m128i tmp3lo = _mm256_castsi256_si128(tmp3);
-                const __m128i tmp3hi = _mm256_extracti128_si256(tmp3, 1);
-                const __m128i sum = _mm_add_epi32(tmp3hi, tmp3lo);
-
-                const uint32_t total_expend_cent1 = _mm_extract_epi32(sum, 0);
-                const uint32_t total_expend_cent2 = _mm_extract_epi32(sum, 1);
-                const uint32_t total_expend_cent3 = _mm_extract_epi32(sum, 2);
-                const uint32_t total_expend_cent4 = _mm_extract_epi32(sum, 3);
-
-#define _CHECK_RESULT(N) \
-                if (total_expend_cent##N > 0) { \
-                    query_result_t tmp; \
-                    tmp.orderdate = orderdate##N; \
-                    tmp.orderkey = orderkey##N; \
-                    tmp.total_expend_cent = total_expend_cent##N; \
-                    \
-                    if (results.size() < TOPN) { \
-                        results.emplace_back(std::move(tmp)); \
-                        if (__unlikely(results.size() == TOPN)) { \
-                            std::make_heap(results.begin(), results.end(), std::greater<>()); \
-                        } \
-                    } \
-                    else { \
-                        if (tmp > *results.begin()) { \
-                            std::pop_heap(results.begin(), results.end(), std::greater<>()); \
-                            *results.rbegin() = tmp; \
-                            std::push_heap(results.begin(), results.end(), std::greater<>()); \
-                        } \
-                    } \
-                }
-
-                _CHECK_RESULT(1)
-                _CHECK_RESULT(2)
-                _CHECK_RESULT(3)
-                _CHECK_RESULT(4)
-#undef _CHECK_RESULT
-            }
-
-
-            while (p < end) {
-                const uint32_t orderdate_diff = *(p + 7) >> 30;
-                const date_t orderdate = base_orderdate + orderdate_diff;
-                const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
-
-                __m256i items = _mm256_load_si256((__m256i*)p);
-                p += 8;
-
-                const __m256i gt_mask = _mm256_cmpgt_epi32(items, greater_than_value);
-                if (_mm256_testz_si256(gt_mask, gt_mask)) continue;
-
-                items = _mm256_and_si256(items, gt_mask);
-                items = _mm256_and_si256(items, expend_mask);
-
-                // TODO: looks for better way!
-                // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
-                __m256i sum = _mm256_hadd_epi32(items, items);
-                sum = _mm256_hadd_epi32(sum, sum);
-                const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
-                ASSERT(total_expend_cent > 0);
-
-                query_result_t tmp;
-                tmp.orderdate = orderdate;
-                tmp.orderkey = orderkey;
-                tmp.total_expend_cent = total_expend_cent;
-
-                if (results.size() < TOPN) {
-                    results.emplace_back(std::move(tmp));
-                    if (__unlikely(results.size() == TOPN)) {
-                        std::make_heap(results.begin(), results.end(), std::greater<>());
-                    }
-                }
-                else {
-                    if (tmp > *results.begin()) {
-                        std::pop_heap(results.begin(), results.end(), std::greater<>());
-                        *results.rbegin() = tmp;
-                        std::push_heap(results.begin(), results.end(), std::greater<>());
-                    }
-                }
-            }
-//
-//            uint32_t* p = ptr;
-//            uint32_t* end = (uint32_t*)((uintptr_t)ptr + bucket_size_major);
-//            while (p < end) {
-//                const uint32_t orderdate_diff = *(p + 7) >> 30;
-//                const date_t orderdate = base_orderdate + orderdate_diff;
-//                const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
-//
-//                __m256i items = _mm256_load_si256((__m256i*)p);
-//                p += 8;
-//
-//                const __m256i gt_mask = _mm256_cmpgt_epi32(items, greater_than_value);
-//                if (_mm256_testz_si256(gt_mask, gt_mask)) continue;
-//
-//                items = _mm256_and_si256(items, gt_mask);
-//                items = _mm256_and_si256(items, expend_mask);
-//
-//                // TODO: looks for better way!
-//                // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
-//                __m256i sum = _mm256_hadd_epi32(items, items);
-//                sum = _mm256_hadd_epi32(sum, sum);
-//                const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
-//                ASSERT(total_expend_cent > 0);
-//
-//                query_result_t tmp;
-//                tmp.orderdate = orderdate;
-//                tmp.orderkey = orderkey;
-//                tmp.total_expend_cent = total_expend_cent;
-//
-//                if (results.size() < TOPN) {
-//                    results.emplace_back(std::move(tmp));
-//                    if (__unlikely(results.size() == TOPN)) {
-//                        std::make_heap(results.begin(), results.end(), std::greater<>());
-//                    }
-//                }
-//                else {
-//                    if (tmp > *results.begin()) {
-//                        std::pop_heap(results.begin(), results.end(), std::greater<>());
-//                        *results.rbegin() = tmp;
-//                        std::push_heap(results.begin(), results.end(), std::greater<>());
-//                    }
-//                }
-//            }
-        }
-
-        std::sort(results.begin(), results.end(), std::greater<>());
-        for (const auto& r : results) {
-            const uint32_t print_orderkey = ((r.orderkey & ~0b111) << 2) | (r.orderkey & 0b111);
-            const uint32_t year = date_get_year(r.orderdate);
-            const uint32_t month = date_get_month(r.orderdate);
-            const uint32_t day = date_get_day(r.orderdate);
-            INFO("%u|%04u-%02u-%02u|%u.%02u", print_orderkey, year, month, day, r.total_expend_cent / 100, r.total_expend_cent % 100);
-        }
-    }
-#endif  // ENABLE_ASSERTION
-
 }
 
 
@@ -2275,6 +2382,13 @@ void create_index_initialize_before_fork() noexcept
                 O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
                 0666));
 
+            snprintf(filename, std::size(filename), "holder_mid_%04u", holder_id);
+            g_holder_files_mid_fd[holder_id] = C_CALL(openat(
+                g_index_directory_fd,
+                filename,
+                O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
+                0666));
+
             snprintf(filename, std::size(filename), "holder_minor_%04u", holder_id);
             g_holder_files_minor_fd[holder_id] = C_CALL(openat(
                 g_index_directory_fd,
@@ -2286,6 +2400,12 @@ void create_index_initialize_before_fork() noexcept
         g_endoffset_file_major.fd = C_CALL(openat(
             g_index_directory_fd,
             "endoffset_major",
+            O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
+            0666));
+
+        g_endoffset_file_mid.fd = C_CALL(openat(
+            g_index_directory_fd,
+            "endoffset_mid",
             O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
             0666));
 
@@ -2310,6 +2430,12 @@ void create_index_initialize_before_fork() noexcept
         g_pretopn_count_file.fd = C_CALL(openat(
             g_index_directory_fd,
             "pretopn_count",
+            O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
+            0666));
+
+        g_only_mid_max_expend_file.fd = C_CALL(openat(
+            g_index_directory_fd,
+            "only_mid_max_expend",
             O_RDWR | O_CLOEXEC | O_CREAT | O_EXCL,
             0666));
 

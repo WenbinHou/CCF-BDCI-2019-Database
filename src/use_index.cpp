@@ -72,6 +72,7 @@ namespace
     query_context_t** g_query_contexts = nullptr;  // [g_query_count]
 
     std::uint64_t* g_buckets_endoffset_major = nullptr;  // [g_shared->total_buckets]
+    std::uint64_t* g_buckets_endoffset_mid = nullptr;  // [g_shared->total_buckets]
     std::uint64_t* g_buckets_endoffset_minor = nullptr;  // [g_shared->total_buckets]
 
     std::thread g_output_write_thread { };  // valid only if tid == 0
@@ -920,6 +921,12 @@ void scan_major_index_check_orderdate_maybe_check_shipdate(
 }
 
 
+
+// TODO: implement them!
+#define scan_mid_index_nocheck_orderdate_maybe_check_shipdate   scan_major_index_nocheck_orderdate_maybe_check_shipdate
+#define scan_mid_index_check_orderdate_maybe_check_shipdate     scan_major_index_check_orderdate_maybe_check_shipdate
+
+
 __always_inline
 void parse_query_scan_range() noexcept
 {
@@ -1121,11 +1128,14 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
     // Map major index
     //
     ASSERT(g_buckets_endoffset_major != nullptr);
+    ASSERT(g_buckets_endoffset_mid != nullptr);
+    ASSERT(g_buckets_endoffset_minor != nullptr);
 
-    //
-    // TODO: for ground truth only!
-    //
-    void* const ptr = mmap_reserve_space(g_shared->meta.max_bucket_size_major);
+    void* const ptr = mmap_reserve_space(
+        std::max({
+            g_shared->meta.max_bucket_size_major,
+            g_shared->meta.max_bucket_size_mid,
+            g_shared->meta.max_bucket_size_minor}));
 
     while (true) {
         const uint32_t query_id = g_shared->use_index.worker_query_id_shared_counter++;
@@ -1362,7 +1372,210 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         }
 
 
+        //
+        // Step 6: mid buckets, nocheck_orderdate_check_shipdate
+        //
+        for (uint32_t bucket_id = ctx->check_orderdate_check_shipdate_begin_bucket_id;
+            bucket_id < ctx->nocheck_head_begin_bucket_id;
+            ++bucket_id) {
 
+            // Check "only_mid_max_expend" index (likely to skip mid buckets)
+            ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
+            const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_mid_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
+
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
+            const uint32_t holder_begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_mid = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * (bucket_id - holder_begin_bucket_id);
+            const uint64_t bucket_size_mid = g_buckets_endoffset_mid[bucket_id] - bucket_start_offset_mid;
+            if (__unlikely(bucket_size_mid == 0)) continue;
+
+            void* const mapped_ptr = mmap(
+                ptr,
+                bucket_size_mid,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_mid_fd[holder_id],
+                bucket_start_offset_mid);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == ptr);
+
+            scan_mid_index_nocheck_orderdate_maybe_check_shipdate</*_CheckShipdateDiff*/true>(
+                (const uint32_t*)ptr,
+                bucket_size_mid,
+                calc_bucket_base_orderdate_by_bucket_id(bucket_id),
+                ctx->results,
+                ctx->results_length,
+                ctx->q_topn,
+                ctx->q_shipdate);
+        }
+
+
+        //
+        // Step 7: mid buckets, nocheck_orderdate_nocheck_shipdate
+        //
+        for (uint32_t bucket_id = ctx->nocheck_head_begin_bucket_id;
+            bucket_id < ctx->pretopn_begin_bucket_id;
+            ++bucket_id) {
+
+            // Check "only_mid_max_expend" index (likely to skip mid buckets)
+            ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
+            const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_mid_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
+
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
+            const uint32_t holder_begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_mid = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * (bucket_id - holder_begin_bucket_id);
+            const uint64_t bucket_size_mid = g_buckets_endoffset_mid[bucket_id] - bucket_start_offset_mid;
+            if (__unlikely(bucket_size_mid == 0)) continue;
+
+            void* const mapped_ptr = mmap(
+                ptr,
+                bucket_size_mid,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_mid_fd[holder_id],
+                bucket_start_offset_mid);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == ptr);
+
+            scan_mid_index_nocheck_orderdate_maybe_check_shipdate</*_CheckShipdateDiff*/false>(
+                (const uint32_t*)ptr,
+                bucket_size_mid,
+                calc_bucket_base_orderdate_by_bucket_id(bucket_id),
+                ctx->results,
+                ctx->results_length,
+                ctx->q_topn,
+                ctx->q_shipdate);
+
+            //INFO("query #%u: <2.1> nocheck_orderdate, nocheck_shipdate bucket %u", query_id, bucket_id);
+        }
+
+
+        //
+        // Step 8: mid buckets, nocheck_orderdate_nocheck_shipdate
+        //
+        for (uint32_t bucket_id = ctx->nocheck_tail_begin_bucket_id;
+            bucket_id < ctx->only_check_orderdate_begin_bucket_id;
+            ++bucket_id) {
+
+            // Check "only_mid_max_expend" index (likely to skip mid buckets)
+            ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
+            const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_mid_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
+
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
+            const uint32_t holder_begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_mid = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * (bucket_id - holder_begin_bucket_id);
+            const uint64_t bucket_size_mid = g_buckets_endoffset_mid[bucket_id] - bucket_start_offset_mid;
+            if (__unlikely(bucket_size_mid == 0)) continue;
+
+            void* const mapped_ptr = mmap(
+                ptr,
+                bucket_size_mid,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_mid_fd[holder_id],
+                bucket_start_offset_mid);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == ptr);
+
+            scan_mid_index_nocheck_orderdate_maybe_check_shipdate</*_CheckShipdateDiff*/false>(
+                (const uint32_t*)ptr,
+                bucket_size_mid,
+                calc_bucket_base_orderdate_by_bucket_id(bucket_id),
+                ctx->results,
+                ctx->results_length,
+                ctx->q_topn,
+                ctx->q_shipdate);
+
+            //INFO("query #%u: <2.2> nocheck_orderdate, nocheck_shipdate bucket %u", query_id, bucket_id);
+        }
+
+
+        //
+        // Step 9: mid buckets, check_orderdate_maybe_check_shipdate
+        //
+        for (uint32_t bucket_id = ctx->only_check_orderdate_begin_bucket_id;
+            bucket_id < ctx->only_check_orderdate_end_bucket_id;
+            ++bucket_id) {
+
+            // Check "only_mid_max_expend" index (likely to skip mid buckets)
+            ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
+            const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
+            if (__likely(ctx->results_length > 0)) {
+                const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
+                if (__likely(only_mid_max_expend < curr_min_expend)) {
+                    continue;
+                }
+            }
+
+            const uint32_t holder_id = bucket_id / g_shared->buckets_per_holder;
+            ASSERT(holder_id < CONFIG_INDEX_HOLDER_COUNT);
+            const uint32_t holder_begin_bucket_id = holder_id * g_shared->buckets_per_holder;
+
+            const uintptr_t bucket_start_offset_mid = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID * (bucket_id - holder_begin_bucket_id);
+            const uint64_t bucket_size_mid = g_buckets_endoffset_mid[bucket_id] - bucket_start_offset_mid;
+            if (__unlikely(bucket_size_mid == 0)) continue;
+
+            void* const mapped_ptr = mmap(
+                ptr,
+                bucket_size_mid,
+                PROT_READ,
+                MAP_FIXED | MAP_PRIVATE | MAP_POPULATE,
+                g_holder_files_mid_fd[holder_id],
+                bucket_start_offset_mid);
+            CHECK(mapped_ptr != MAP_FAILED, "mmap() failed. errno: %d (%s)", errno, strerror(errno));
+            ASSERT(mapped_ptr == ptr);
+
+            const date_t bucket_base_orderdate = calc_bucket_base_orderdate_by_bucket_id(bucket_id);
+            if (ctx->q_shipdate >= bucket_base_orderdate) {
+                scan_mid_index_check_orderdate_maybe_check_shipdate</*_CheckShipdateDiff*/true>(
+                    (const uint32_t*)ptr,
+                    bucket_size_mid,
+                    calc_bucket_base_orderdate_by_bucket_id(bucket_id),
+                    ctx->q_orderdate,
+                    ctx->results,
+                    ctx->results_length,
+                    ctx->q_topn,
+                    ctx->q_shipdate);
+            }
+            else {
+                scan_mid_index_check_orderdate_maybe_check_shipdate</*_CheckShipdateDiff*/false>(
+                    (const uint32_t*)ptr,
+                    bucket_size_mid,
+                    calc_bucket_base_orderdate_by_bucket_id(bucket_id),
+                    ctx->q_orderdate,
+                    ctx->results,
+                    ctx->results_length,
+                    ctx->q_topn,
+                    ctx->q_shipdate);
+            }
+        }
+        
+        
+        
         //
         // Step 6: minor buckets, nocheck_orderdate_check_shipdate
         //
@@ -1608,6 +1821,7 @@ void use_index_initialize_before_fork() noexcept
 
         INFO("meta.max_shipdate_orderdate_diff: %u", g_shared->meta.max_shipdate_orderdate_diff);
         INFO("meta.max_bucket_size_major: %lu", g_shared->meta.max_bucket_size_major);
+        INFO("meta.max_bucket_size_mid: %lu", g_shared->meta.max_bucket_size_mid);
         INFO("meta.max_bucket_size_minor: %lu", g_shared->meta.max_bucket_size_minor);
     }
 
@@ -1666,6 +1880,12 @@ void use_index_initialize_before_fork() noexcept
                 filename,
                 O_RDONLY | O_CLOEXEC));
 
+            snprintf(filename, std::size(filename), "holder_mid_%04u", holder_id);
+            g_holder_files_mid_fd[holder_id] = C_CALL(openat(
+                g_index_directory_fd,
+                filename,
+                O_RDONLY | O_CLOEXEC));
+
             snprintf(filename, std::size(filename), "holder_minor_%04u", holder_id);
             g_holder_files_minor_fd[holder_id] = C_CALL(openat(
                 g_index_directory_fd,
@@ -1678,6 +1898,11 @@ void use_index_initialize_before_fork() noexcept
             "endoffset_major",
             &g_endoffset_file_major);
         
+        __openat_file_read(
+            g_index_directory_fd,
+            "endoffset_mid",
+            &g_endoffset_file_mid);
+
         __openat_file_read(
             g_index_directory_fd,
             "endoffset_minor",
@@ -1700,6 +1925,12 @@ void use_index_initialize_before_fork() noexcept
             "pretopn_count",
             &g_pretopn_count_file);
         ASSERT(g_pretopn_count_file.file_size == sizeof(uint32_t) * g_shared->total_plates);
+
+        __openat_file_read(
+            g_index_directory_fd,
+            "only_mid_max_expend",
+            &g_only_mid_max_expend_file);
+        ASSERT(g_only_mid_max_expend_file.file_size == sizeof(uint32_t) * g_shared->total_buckets);
 
         __openat_file_read(
             g_index_directory_fd,
@@ -1731,6 +1962,16 @@ void use_index_initialize_before_fork() noexcept
             0);
         INFO("[%u] g_pretopn_count_start_ptr: %p", g_id, g_pretopn_count_start_ptr);
 
+        ASSERT(g_only_mid_max_expend_file.file_size > 0);
+        ASSERT(g_only_mid_max_expend_file.fd > 0);
+        g_only_mid_max_expend_start_ptr = (uint32_t*)my_mmap(
+            g_only_mid_max_expend_file.file_size,
+            PROT_READ,
+            MAP_PRIVATE | MAP_POPULATE,
+            g_only_mid_max_expend_file.fd,
+            0);
+        INFO("[%u] g_only_mid_max_expend_start_ptr: %p", g_id, g_only_mid_max_expend_start_ptr);
+
         ASSERT(g_only_minor_max_expend_file.file_size > 0);
         ASSERT(g_only_minor_max_expend_file.fd > 0);
         g_only_minor_max_expend_start_ptr = (uint32_t*)my_mmap(
@@ -1757,6 +1998,15 @@ void use_index_initialize_before_fork() noexcept
             0);
         DEBUG("g_buckets_endoffset_major: %p", g_buckets_endoffset_major);
 
+        ASSERT(g_endoffset_file_mid.file_size == sizeof(uint64_t) * g_shared->total_buckets);
+        g_buckets_endoffset_mid = (uint64_t*)my_mmap(
+            g_endoffset_file_mid.file_size,
+            PROT_READ,
+            MAP_PRIVATE | MAP_POPULATE,
+            g_endoffset_file_mid.fd,
+            0);
+        DEBUG("g_buckets_endoffset_mid: %p", g_buckets_endoffset_mid);
+        
         ASSERT(g_endoffset_file_minor.file_size == sizeof(uint64_t) * g_shared->total_buckets);
         g_buckets_endoffset_minor = (uint64_t*)my_mmap(
             g_endoffset_file_minor.file_size,

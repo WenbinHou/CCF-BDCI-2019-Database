@@ -187,6 +187,7 @@ public:
     uint32_t buckets_per_holder = 0;
 
     std::atomic_uint64_t next_truncate_holder_major_id { 0 };
+    std::atomic_uint64_t next_truncate_holder_mid_id { 0 };
     std::atomic_uint64_t next_truncate_holder_minor_id { 0 };
 
     uint32_t total_plates = 0;
@@ -205,6 +206,7 @@ public:
     struct {
         uint32_t max_shipdate_orderdate_diff = 0;
         uint64_t max_bucket_size_major = 0;
+        uint64_t max_bucket_size_mid = 0;
         uint64_t max_bucket_size_minor = 0;
     } meta { };
 
@@ -239,8 +241,10 @@ inline const char* const* g_argv_queries = nullptr;
 constexpr const uint32_t BUCKETS_PER_MKTID = __div_up((MAX_TABLE_DATE - MIN_TABLE_DATE + 1), CONFIG_ORDERDATES_PER_BUCKET);
 
 inline load_file_context g_endoffset_file_major { };
+inline load_file_context g_endoffset_file_mid { };
 inline load_file_context g_endoffset_file_minor { };
 inline int g_holder_files_major_fd[CONFIG_INDEX_HOLDER_COUNT] { };
+inline int g_holder_files_mid_fd[CONFIG_INDEX_HOLDER_COUNT] { };
 inline int g_holder_files_minor_fd[CONFIG_INDEX_HOLDER_COUNT] { };
 
 
@@ -248,12 +252,14 @@ static_assert(CONFIG_TOPN_DATES_PER_PLATE % CONFIG_ORDERDATES_PER_BUCKET == 0);
 constexpr const uint32_t BUCKETS_PER_PLATE = CONFIG_TOPN_DATES_PER_PLATE / CONFIG_ORDERDATES_PER_BUCKET;
 constexpr const uint32_t PLATES_PER_MKTID = __div_up(BUCKETS_PER_MKTID, BUCKETS_PER_PLATE);
 
+inline load_file_context g_only_mid_max_expend_file { };
 inline load_file_context g_only_minor_max_expend_file { };
 inline load_file_context g_pretopn_file { };
 inline load_file_context g_pretopn_count_file { };
 
 inline uint64_t* g_pretopn_start_ptr = nullptr;  // [g_shared->total_plates][CONFIG_EXPECT_MAX_TOPN]
 inline uint32_t* g_pretopn_count_start_ptr = nullptr;  // [g_shared->total_plates]
+inline uint32_t* g_only_mid_max_expend_start_ptr = nullptr;  // [g_shared->total_buckets]
 inline uint32_t* g_only_minor_max_expend_start_ptr = nullptr;  // [g_shared->total_buckets]
 
 
