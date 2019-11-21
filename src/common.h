@@ -194,6 +194,7 @@ public:
     std::atomic_uint64_t next_truncate_holder_minor_id { 0 };
 
     std::atomic_uint32_t write_tail_bucket_id_shared_counter { 0 };
+    std::atomic_uint32_t only_xxx_max_expend_cent_bucket_id_shared_counter { 0 };
     std::atomic_uint32_t pretopn_plate_id_shared_counter { 0 };
 
     struct {
