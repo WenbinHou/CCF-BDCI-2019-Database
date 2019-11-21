@@ -82,10 +82,10 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
 // These buffers will be flushed to index file once they are full
 // This is the size for (item_count == 4,5,6,7)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 30)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 4 * CONFIG_ORDERDATES_PER_BUCKET)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 3 * CONFIG_ORDERDATES_PER_BUCKET)  // Tune factor as necessary
 // This is the size for (item_count == 1,2,3)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 2 * CONFIG_ORDERDATES_PER_BUCKET)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 1 * CONFIG_ORDERDATES_PER_BUCKET)  // Tune factor as necessary
 
 
 // Number of maximum pretopn limit
