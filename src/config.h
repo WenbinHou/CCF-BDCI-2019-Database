@@ -14,7 +14,7 @@
 #define ENABLE_ASSERTION                    0
 #define ENABLE_LOGGING_TRACE                0
 #define ENABLE_LOGGING_DEBUG                0
-#define ENABLE_LOGGING_INFO                 0
+#define ENABLE_LOGGING_INFO                 1
 #endif
 
 
@@ -82,10 +82,10 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
 // These buffers will be flushed to index file once they are full
 // This is the size for (item_count == 4,5,6,7)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 30)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 3 * std::min<uint32_t>(CONFIG_ORDERDATES_PER_BUCKET, 4U))  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 4 * CONFIG_ORDERDATES_PER_BUCKET)  // Tune factor as necessary
 // This is the size for (item_count == 1,2,3)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * std::min<uint32_t>(CONFIG_ORDERDATES_PER_BUCKET, 4U))  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 2 * CONFIG_ORDERDATES_PER_BUCKET)  // Tune factor as necessary
 
 
 // Number of maximum pretopn limit

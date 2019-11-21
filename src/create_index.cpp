@@ -1609,6 +1609,10 @@ static void worker_compute_pretopn_for_plate_minor(
     while (p < end) {
         const uint32_t total_expend_cent = (p[0] & 0x00FFFFFF) + (p[1] & 0x00FFFFFF) + (p[2] & 0x00FFFFFF);
 
+        if (__unlikely(total_expend_cent > only_minor_max_expend_cent_i32)) {
+            only_minor_max_expend_cent_i32 = total_expend_cent;
+        }
+
         if (total_expend_cent > curr_min_expend_cent_i32) _CHECK_ONE_ORDER();
         p += 4;
     }
