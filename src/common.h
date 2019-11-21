@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/ipc.h>
+#include <sys/uio.h>
 #include <sys/resource.h>
 #include <sys/shm.h>
 #include <thread>
@@ -156,6 +157,7 @@ static_assert(sizeof(query_result_t) == 12);
 #define SHMKEY_ORDERKEY_TO_ORDER    ((key_t)0x19491005)
 #define SHMKEY_ORDERKEY_TO_CUSTKEY  ((key_t)0x19491006)
 #define SHMKEY_QUERY_CONTEXT        ((key_t)0x19491007)
+#define SHMKEY_ITEMS_BUFFER         ((key_t)0x19491008)
 
 
 //==============================================================================
@@ -185,12 +187,13 @@ public:
 
     uint32_t total_buckets = 0;
     uint32_t buckets_per_holder = 0;
+    uint32_t total_plates = 0;
 
     std::atomic_uint64_t next_truncate_holder_major_id { 0 };
     std::atomic_uint64_t next_truncate_holder_mid_id { 0 };
     std::atomic_uint64_t next_truncate_holder_minor_id { 0 };
 
-    uint32_t total_plates = 0;
+    std::atomic_uint32_t write_tail_bucket_id_shared_counter { 0 };
     std::atomic_uint32_t pretopn_plate_id_shared_counter { 0 };
 
     struct {
@@ -206,7 +209,9 @@ public:
     struct {
         uint32_t max_shipdate_orderdate_diff = 0;
         uint64_t max_bucket_size_major = 0;
+#if ENABLE_MID_INDEX
         uint64_t max_bucket_size_mid = 0;
+#endif
         uint64_t max_bucket_size_minor = 0;
     } meta { };
 
@@ -241,10 +246,14 @@ inline const char* const* g_argv_queries = nullptr;
 constexpr const uint32_t BUCKETS_PER_MKTID = __div_up((MAX_TABLE_DATE - MIN_TABLE_DATE + 1), CONFIG_ORDERDATES_PER_BUCKET);
 
 inline load_file_context g_endoffset_file_major { };
+#if ENABLE_MID_INDEX
 inline load_file_context g_endoffset_file_mid { };
+#endif
 inline load_file_context g_endoffset_file_minor { };
 inline int g_holder_files_major_fd[CONFIG_INDEX_HOLDER_COUNT] { };
+#if ENABLE_MID_INDEX
 inline int g_holder_files_mid_fd[CONFIG_INDEX_HOLDER_COUNT] { };
+#endif
 inline int g_holder_files_minor_fd[CONFIG_INDEX_HOLDER_COUNT] { };
 
 
@@ -252,14 +261,18 @@ static_assert(CONFIG_TOPN_DATES_PER_PLATE % CONFIG_ORDERDATES_PER_BUCKET == 0);
 constexpr const uint32_t BUCKETS_PER_PLATE = CONFIG_TOPN_DATES_PER_PLATE / CONFIG_ORDERDATES_PER_BUCKET;
 constexpr const uint32_t PLATES_PER_MKTID = __div_up(BUCKETS_PER_MKTID, BUCKETS_PER_PLATE);
 
+#if ENABLE_MID_INDEX
 inline load_file_context g_only_mid_max_expend_file { };
+#endif
 inline load_file_context g_only_minor_max_expend_file { };
 inline load_file_context g_pretopn_file { };
 inline load_file_context g_pretopn_count_file { };
 
 inline uint64_t* g_pretopn_start_ptr = nullptr;  // [g_shared->total_plates][CONFIG_EXPECT_MAX_TOPN]
 inline uint32_t* g_pretopn_count_start_ptr = nullptr;  // [g_shared->total_plates]
+#if ENABLE_MID_INDEX
 inline uint32_t* g_only_mid_max_expend_start_ptr = nullptr;  // [g_shared->total_buckets]
+#endif
 inline uint32_t* g_only_minor_max_expend_start_ptr = nullptr;  // [g_shared->total_buckets]
 
 

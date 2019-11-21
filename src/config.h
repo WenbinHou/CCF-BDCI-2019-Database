@@ -14,7 +14,7 @@
 #define ENABLE_ASSERTION                    0
 #define ENABLE_LOGGING_TRACE                0
 #define ENABLE_LOGGING_DEBUG                0
-#define ENABLE_LOGGING_INFO                 1
+#define ENABLE_LOGGING_INFO                 0
 #endif
 
 
@@ -77,9 +77,14 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
 // This is to accelerate buffered I/O (reduce lock contention in vfs_read)
 #define CONFIG_INDEX_HOLDER_COUNT           (32)
 
+// Do we use mid-level index?
+// This largely increase create_index time, also largely decrease use_index time
+#define ENABLE_MID_INDEX                    0
+
 
 // How large is a single buffer for each bucket? How many buffer for all workers do we need?
 // These buffers will be flushed to index file once they are full
+#if ENABLE_MID_INDEX
 // This is the size for (item_count == 6,7)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 20)  // Tune factor as necessary
 #define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 3 / 2)  // Tune factor as necessary
@@ -89,6 +94,14 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
 // This is the size for (item_count == 1,2,3)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
 #define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 3 / 4)  // Tune factor as necessary
+#else
+// This is the size for (item_count == 4,5,6,7)
+#define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 30)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 3)  // Tune factor as necessary
+// This is the size for (item_count == 1,2,3)
+#define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 1)  // Tune factor as necessary
+#endif
 
 
 // Number of maximum pretopn limit

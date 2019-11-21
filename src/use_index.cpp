@@ -72,7 +72,9 @@ namespace
     query_context_t** g_query_contexts = nullptr;  // [g_query_count]
 
     std::uint64_t* g_buckets_endoffset_major = nullptr;  // [g_shared->total_buckets]
+#if ENABLE_MID_INDEX
     std::uint64_t* g_buckets_endoffset_mid = nullptr;  // [g_shared->total_buckets]
+#endif
     std::uint64_t* g_buckets_endoffset_minor = nullptr;  // [g_shared->total_buckets]
 
     std::thread g_output_write_thread { };  // valid only if tid == 0
@@ -922,9 +924,11 @@ void scan_major_index_check_orderdate_maybe_check_shipdate(
 
 
 
+#if ENABLE_MID_INDEX
 // TODO: implement them!
 #define scan_mid_index_nocheck_orderdate_maybe_check_shipdate   scan_major_index_nocheck_orderdate_maybe_check_shipdate
 #define scan_mid_index_check_orderdate_maybe_check_shipdate     scan_major_index_check_orderdate_maybe_check_shipdate
+#endif
 
 
 __always_inline
@@ -1128,13 +1132,17 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
     // Map major index
     //
     ASSERT(g_buckets_endoffset_major != nullptr);
+#if ENABLE_MID_INDEX
     ASSERT(g_buckets_endoffset_mid != nullptr);
+#endif
     ASSERT(g_buckets_endoffset_minor != nullptr);
 
     void* const ptr = mmap_reserve_space(
         std::max({
             g_shared->meta.max_bucket_size_major,
+#if ENABLE_MID_INDEX
             g_shared->meta.max_bucket_size_mid,
+#endif
             g_shared->meta.max_bucket_size_minor}));
 
     while (true) {
@@ -1372,6 +1380,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         }
 
 
+#if ENABLE_MID_INDEX
         //
         // Step 6: mid buckets, nocheck_orderdate_check_shipdate
         //
@@ -1573,11 +1582,11 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
                     ctx->q_shipdate);
             }
         }
-        
+#endif  // ENABLE_MID_INDEX
         
         
         //
-        // Step 6: minor buckets, nocheck_orderdate_check_shipdate
+        // Step 10: minor buckets, nocheck_orderdate_check_shipdate
         //
         for (uint32_t bucket_id = ctx->check_orderdate_check_shipdate_begin_bucket_id;
             bucket_id < ctx->nocheck_head_begin_bucket_id;
@@ -1623,7 +1632,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
 
         //
-        // Step 7: minor buckets, nocheck_orderdate_nocheck_shipdate
+        // Step 11: minor buckets, nocheck_orderdate_nocheck_shipdate
         //
         for (uint32_t bucket_id = ctx->nocheck_head_begin_bucket_id;
             bucket_id < ctx->pretopn_begin_bucket_id;
@@ -1671,7 +1680,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
 
         //
-        // Step 8: minor buckets, nocheck_orderdate_nocheck_shipdate
+        // Step 12: minor buckets, nocheck_orderdate_nocheck_shipdate
         //
         for (uint32_t bucket_id = ctx->nocheck_tail_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_begin_bucket_id;
@@ -1719,7 +1728,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
 
         //
-        // Step 9: minor buckets, check_orderdate_maybe_check_shipdate
+        // Step 13: minor buckets, check_orderdate_maybe_check_shipdate
         //
         for (uint32_t bucket_id = ctx->only_check_orderdate_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_end_bucket_id;
@@ -1821,7 +1830,9 @@ void use_index_initialize_before_fork() noexcept
 
         INFO("meta.max_shipdate_orderdate_diff: %u", g_shared->meta.max_shipdate_orderdate_diff);
         INFO("meta.max_bucket_size_major: %lu", g_shared->meta.max_bucket_size_major);
+#if ENABLE_MID_INDEX
         INFO("meta.max_bucket_size_mid: %lu", g_shared->meta.max_bucket_size_mid);
+#endif
         INFO("meta.max_bucket_size_minor: %lu", g_shared->meta.max_bucket_size_minor);
     }
 
@@ -1880,11 +1891,13 @@ void use_index_initialize_before_fork() noexcept
                 filename,
                 O_RDONLY | O_CLOEXEC));
 
+#if ENABLE_MID_INDEX
             snprintf(filename, std::size(filename), "holder_mid_%04u", holder_id);
             g_holder_files_mid_fd[holder_id] = C_CALL(openat(
                 g_index_directory_fd,
                 filename,
                 O_RDONLY | O_CLOEXEC));
+#endif
 
             snprintf(filename, std::size(filename), "holder_minor_%04u", holder_id);
             g_holder_files_minor_fd[holder_id] = C_CALL(openat(
@@ -1897,11 +1910,13 @@ void use_index_initialize_before_fork() noexcept
             g_index_directory_fd,
             "endoffset_major",
             &g_endoffset_file_major);
-        
+
+#if ENABLE_MID_INDEX
         __openat_file_read(
             g_index_directory_fd,
             "endoffset_mid",
             &g_endoffset_file_mid);
+#endif
 
         __openat_file_read(
             g_index_directory_fd,
@@ -1926,11 +1941,13 @@ void use_index_initialize_before_fork() noexcept
             &g_pretopn_count_file);
         ASSERT(g_pretopn_count_file.file_size == sizeof(uint32_t) * g_shared->total_plates);
 
+#if ENABLE_MID_INDEX
         __openat_file_read(
             g_index_directory_fd,
             "only_mid_max_expend",
             &g_only_mid_max_expend_file);
         ASSERT(g_only_mid_max_expend_file.file_size == sizeof(uint32_t) * g_shared->total_buckets);
+#endif
 
         __openat_file_read(
             g_index_directory_fd,
@@ -1962,6 +1979,7 @@ void use_index_initialize_before_fork() noexcept
             0);
         INFO("[%u] g_pretopn_count_start_ptr: %p", g_id, g_pretopn_count_start_ptr);
 
+#if ENABLE_MID_INDEX
         ASSERT(g_only_mid_max_expend_file.file_size > 0);
         ASSERT(g_only_mid_max_expend_file.fd > 0);
         g_only_mid_max_expend_start_ptr = (uint32_t*)my_mmap(
@@ -1971,6 +1989,7 @@ void use_index_initialize_before_fork() noexcept
             g_only_mid_max_expend_file.fd,
             0);
         INFO("[%u] g_only_mid_max_expend_start_ptr: %p", g_id, g_only_mid_max_expend_start_ptr);
+#endif
 
         ASSERT(g_only_minor_max_expend_file.file_size > 0);
         ASSERT(g_only_minor_max_expend_file.fd > 0);
@@ -1998,6 +2017,7 @@ void use_index_initialize_before_fork() noexcept
             0);
         DEBUG("g_buckets_endoffset_major: %p", g_buckets_endoffset_major);
 
+#if ENABLE_MID_INDEX
         ASSERT(g_endoffset_file_mid.file_size == sizeof(uint64_t) * g_shared->total_buckets);
         g_buckets_endoffset_mid = (uint64_t*)my_mmap(
             g_endoffset_file_mid.file_size,
@@ -2006,7 +2026,8 @@ void use_index_initialize_before_fork() noexcept
             g_endoffset_file_mid.fd,
             0);
         DEBUG("g_buckets_endoffset_mid: %p", g_buckets_endoffset_mid);
-        
+#endif
+
         ASSERT(g_endoffset_file_minor.file_size == sizeof(uint64_t) * g_shared->total_buckets);
         g_buckets_endoffset_minor = (uint64_t*)my_mmap(
             g_endoffset_file_minor.file_size,
@@ -2069,4 +2090,3 @@ void use_index_initialize_after_fork() noexcept
         });
     }
 }
-
