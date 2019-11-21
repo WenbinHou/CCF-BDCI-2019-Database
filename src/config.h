@@ -14,7 +14,7 @@
 #define ENABLE_ASSERTION                    0
 #define ENABLE_LOGGING_TRACE                0
 #define ENABLE_LOGGING_DEBUG                0
-#define ENABLE_LOGGING_INFO                 0
+#define ENABLE_LOGGING_INFO                 1
 #endif
 
 
@@ -71,7 +71,7 @@
 // How many orderdates are saved in a same bucket?
 //  Must be one of: 1, 2, 4
 #define CONFIG_ORDERDATES_PER_BUCKET        (4)
-static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
+static_assert(CONFIG_ORDERDATES_PER_BUCKET == 4);  // TODO: adjust CONFIG_INDEX_TLS_BUFFER_SIZE_XXX if < 4
 
 // How many index files do we use?
 // This is to accelerate buffered I/O (reduce lock contention in vfs_read)
@@ -79,7 +79,7 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
 
 // Do we use mid-level index?
 // This largely increase create_index time, also largely decrease use_index time
-#define ENABLE_MID_INDEX                    0
+#define ENABLE_MID_INDEX                    1
 
 
 // How large is a single buffer for each bucket? How many buffer for all workers do we need?
@@ -87,21 +87,25 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET <= 4);
 #if ENABLE_MID_INDEX
 // This is the size for (item_count == 6,7)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 20)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 3 / 2)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 3)  // Tune factor as necessary
 // This is the size for (item_count == 4,5)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MID     (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 20)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MID        (4096U * CONFIG_ORDERDATES_PER_BUCKET * 3 / 2)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MID        (4096U * 3)  // Tune factor as necessary
 // This is the size for (item_count == 1,2,3)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 3 / 4)  // Tune factor as necessary
-#else
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 2)  // Tune factor as necessary
+
+#else  // !ENABLE_MID_INDEX
 // This is the size for (item_count == 4,5,6,7)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 30)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 3)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 6)  // Tune factor as necessary
 // This is the size for (item_count == 1,2,3)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * CONFIG_ORDERDATES_PER_BUCKET * 1)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 2)  // Tune factor as necessary
 #endif
+
+#define CONFIG_INDEX_EXTRA_BUFFER_COUNT         (18)
+static_assert(CONFIG_INDEX_EXTRA_BUFFER_COUNT > 0);
 
 
 // Number of maximum pretopn limit
@@ -114,7 +118,7 @@ static_assert(CONFIG_TOPN_DATES_PER_PLATE % CONFIG_ORDERDATES_PER_BUCKET == 0);
 
 // "N" in top-N when pre-calculating
 // If this threshold is exceeded, we can't make use of the pretopn index any more (fallback to normal index scan)
-#define CONFIG_EXPECT_MAX_TOPN              (102400U)  // According to problem description: 10000
+#define CONFIG_EXPECT_MAX_TOPN              (10240U)  // According to problem description: 10000
 static_assert((sizeof(uint64_t) * CONFIG_EXPECT_MAX_TOPN) % PAGE_SIZE == 0);
 
 #endif  // !defined(_BDCI19_CONFIG_H_INCLUDED_)

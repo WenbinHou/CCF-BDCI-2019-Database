@@ -43,6 +43,18 @@ public:
         *item = _items[(_head++) % _Capacity];
     }
 
+    __always_inline bool try_take(/*out*/ T* item) noexcept
+    {
+        if (!_sem_pop.try_wait()) {
+            return false;
+        }
+
+        ASSERT(_head < _tail);
+        *item = _items[(_head++) % _Capacity];
+
+        return true;
+    }
+
     __always_inline void return_back(/*in*/ const T& item) noexcept
     {
         {
@@ -205,6 +217,32 @@ public:
         *item = _items[head % _Capacity];
 
         return true;
+    }
+
+    __always_inline bool try_pop(/*out*/ T* item) noexcept
+    {
+        if (!_sem.try_wait()) {
+            return false;
+        }
+
+        // NOTE:
+        //  We explicitly allow calling pop() before calling init()
+        //  Thus, this assertion should go after sem_wait()
+        ASSERT(_items != nullptr, "BUG: _items == nullptr. init() not called? head=%lu, tail=%lu",
+            _head.load(), _tail.load());
+
+        const size_t head = _head++;
+        const size_t tail = _tail.load();
+        ASSERT(head < tail);
+
+        *item = _items[head % _Capacity];
+
+        return true;
+    }
+
+    __always_inline bool approx_empty() noexcept
+    {
+        return (_head.load() == _tail.load());
     }
 
     __always_inline void mark_push_finish(const uint32_t max_consumer_threads) noexcept
