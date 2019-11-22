@@ -260,12 +260,7 @@ int main(int argc, char* argv[])
     // Initialize g_shared
     //
     {
-        g_shared = (shared_information_t*)my_mmap(
-            sizeof(shared_information_t),
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED | MAP_ANONYMOUS | MAP_POPULATE,
-            -1,
-            0);
+        g_shared = (shared_information_t*)mmap_allocate_page4k_shared(sizeof(shared_information_t));
         DEBUG("g_shared: %p", g_shared);
 
         new (g_shared) shared_information_t;
@@ -277,7 +272,7 @@ int main(int argc, char* argv[])
     //
     {
         // Get query count
-        g_query_count = (uint32_t) std::strtoul(argv[4], nullptr, 10);
+        g_query_count = __parse_u32<'\0'>(argv[4]);
         DEBUG("g_query_count: %u", g_query_count);
         g_argv_queries = &argv[5];
         if (!g_is_creating_index && __unlikely(g_query_count == 0)) {

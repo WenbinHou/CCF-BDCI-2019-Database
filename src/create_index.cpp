@@ -150,19 +150,6 @@ static void load_file_overlapped(
 }
 
 
-template<char _Delimiter>
-__always_inline
-uint32_t __parse_u32(const char* s) noexcept
-{
-    uint32_t result = 0;
-    do {
-        ASSERT(*s >= '0' && *s <= '9', "Unexpected char: %c", *s);
-        result = result * 10 + (*s - '0');
-        ++s;
-    } while (*s != _Delimiter);
-    return result;
-}
-
 __always_inline
 constexpr uint32_t __u32_length(uint32_t n) noexcept
 {
@@ -669,7 +656,7 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
         mapped_file_part_overlapped_t& part = g_txt_mapping_buffers[part_index];
         if (__likely(part.fd == g_orders_file.fd)) {
             void* const ptr = (void*)((uintptr_t)g_txt_mapping_buffer_start_ptr + (uintptr_t)part_index * TXT_MAPPING_BUFFER_SIZE);
-            DEBUG(munmap(ptr, TXT_MAPPING_BUFFER_SIZE));
+            C_CALL(munmap(ptr, TXT_MAPPING_BUFFER_SIZE));
             INFO("[%u] unmap orders for part_index=%u", tid, part_index);
         }
     });
@@ -2052,7 +2039,7 @@ static void worker_compute_pretopn_for_plate_mid(
     while (p < end) {
 
         const uint32_t total_expend_cent = p[6];
-        ASSERT(total_expend_cent > 0, "orderkey: %u", orderkey);
+        ASSERT(total_expend_cent > 0);
         ASSERT(total_expend_cent < (1U << 28));
         if (__likely(total_expend_cent < curr_min_expend_cent)) {
             p += 8;

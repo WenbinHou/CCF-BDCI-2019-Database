@@ -14,7 +14,7 @@
 #define ENABLE_ASSERTION                    0
 #define ENABLE_LOGGING_TRACE                0
 #define ENABLE_LOGGING_DEBUG                0
-#define ENABLE_LOGGING_INFO                 1
+#define ENABLE_LOGGING_INFO                 0
 #endif
 
 

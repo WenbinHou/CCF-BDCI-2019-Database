@@ -66,8 +66,6 @@ static_assert(sizeof(query_context_t) == 96);
 //==============================================================================
 namespace
 {
-    std::unordered_map<std::string, uint8_t> g_mktsegment_to_mktid { };
-
     posix_shm_t<void> g_query_context_shm { };
     query_context_t** g_query_contexts = nullptr;  // [g_query_count]
 
@@ -142,19 +140,19 @@ static void generate_query_output(query_context_t& query) noexcept
 
 
 __always_inline
-void parse_queries() noexcept
+void prepare_query_context_space() noexcept
 {
     ASSERT(g_argv_queries != nullptr);
     ASSERT(g_query_count > 0);
 
-    g_query_contexts = (query_context_t**)malloc(sizeof(query_context_t*) * g_query_count);
-    CHECK(g_query_contexts != nullptr, "malloc() failed");
+    g_query_contexts = (query_context_t**)mmap_allocate_page4k_shared(sizeof(query_context_t*) * g_query_count);
+    DEBUG("g_query_contexts: %p", g_query_contexts);
 
     uint64_t curr_size = 0;
     for (uint32_t query_id = 0; query_id < g_query_count; ++query_id) {
         g_query_contexts[query_id] = (query_context_t*)curr_size;  // tricky here!
 
-        const uint32_t q_topn = (uint32_t)std::strtoul(g_argv_queries[4 * query_id + 3], nullptr, 10);
+        const uint32_t q_topn = __parse_u32<'\0'>(g_argv_queries[4 * query_id + 3]);
         curr_size += sizeof(query_context_t);
         curr_size += q_topn * sizeof(query_result_t);  // results
         curr_size += ((q_topn + 1) * 40ULL);  // output
@@ -172,38 +170,6 @@ void parse_queries() noexcept
     // Because g_query_context_shm.size_in_byte is expected to be small here
     // We choose to shmat BEFORE fork() for (a bit) better performance
     g_query_context_shm.attach_fixed(true);
-
-    for (uint32_t query_id = 0; query_id < g_query_count; ++query_id) {
-        g_query_contexts[query_id] = (query_context_t*)((uintptr_t)g_query_context_shm.ptr + (uintptr_t)g_query_contexts[query_id]);  // tricky here!
-        query_context_t* const ctx = g_query_contexts[query_id];
-
-        new (ctx) query_context_t;
-
-        ctx->q_topn = (uint32_t)std::strtoul(g_argv_queries[4 * query_id + 3], nullptr, 10);
-        ctx->output = (char*)(/*(query_result_t*)*/ctx->results + ctx->q_topn);
-        ctx->output_length = 0;
-
-        ctx->results_length = 0;
-
-        const auto it = g_mktsegment_to_mktid.find(g_argv_queries[4 * query_id + 0]);
-        if (__unlikely(it == g_mktsegment_to_mktid.end())) {
-            ctx->is_bad_query = true;
-            INFO("query #%u: unknown mktsegment: %s", query_id, g_argv_queries[4 * query_id + 0]);
-            continue;
-        }
-
-        ctx->q_mktid = it->second;
-        ctx->q_orderdate = date_from_string</*_Unchecked*/false>(g_argv_queries[4 * query_id + 1]);
-        ctx->q_shipdate = date_from_string</*_Unchecked*/false>(g_argv_queries[4 * query_id + 2]);
-        if (__unlikely(ctx->q_topn == 0)) {
-            ctx->is_bad_query = true;
-            INFO("query #%u: q_topn == 0", query_id);
-            continue;
-        }
-
-        INFO("query #%u: q_mktid=%u,q_orderdate=%u,q_shipdate=%u,q_topn=%u",
-              query_id, ctx->q_mktid, ctx->q_orderdate, ctx->q_shipdate, ctx->q_topn);
-    }
 }
 
 
@@ -1370,14 +1336,56 @@ void parse_query_scan_range() noexcept
     ASSERT(g_shared != nullptr);
     ASSERT(g_shared->meta.max_shipdate_orderdate_diff > 0);
 
+    const uint32_t mktid_count = g_shared->mktid_count;
     while (true) {
         const uint32_t query_id = g_shared->use_index.parse_query_id_shared_counter++;
         if (query_id >= g_query_count) break;
 
-        query_context_t* const ctx = g_query_contexts[query_id];
-        ASSERT(ctx != nullptr);
-        if (__unlikely(ctx->is_bad_query)) continue;
+        ASSERT(g_query_context_shm.ptr != nullptr);
+        ASSERT(g_query_contexts != nullptr);
+        g_query_contexts[query_id] = (query_context_t*)((uintptr_t)g_query_context_shm.ptr + (uintptr_t)g_query_contexts[query_id]);  // tricky here!
 
+        query_context_t* const ctx = g_query_contexts[query_id];
+        new (ctx) query_context_t;
+
+
+        ctx->q_topn = __parse_u32<'\0'>(g_argv_queries[4 * query_id + 3]);
+        ctx->output = (char*)(/*(query_result_t*)*/ctx->results + ctx->q_topn);
+        ctx->output_length = 0;
+
+        ctx->results_length = 0;
+
+        // Find mktsegment
+        {
+            uint32_t mktid;
+            for (mktid = 0; mktid < mktid_count; ++mktid) {
+                if (std::string_view(g_shared->all_mktsegments[mktid].name, g_shared->all_mktsegments[mktid].length) == g_argv_queries[4 * query_id + 0]) {
+                    break;
+                }
+            }
+            if (__unlikely(mktid == mktid_count)) {
+                ctx->is_bad_query = true;
+                INFO("query #%u: unknown mktsegment: %s", query_id, g_argv_queries[4 * query_id + 0]);
+                continue;
+            }
+            ctx->q_mktid = mktid;
+        }
+
+        ctx->q_orderdate = date_from_string</*_Unchecked*/false>(g_argv_queries[4 * query_id + 1]);
+        ctx->q_shipdate = date_from_string</*_Unchecked*/false>(g_argv_queries[4 * query_id + 2]);
+        if (__unlikely(ctx->q_topn == 0)) {
+            ctx->is_bad_query = true;
+            INFO("query #%u: q_topn == 0", query_id);
+            continue;
+        }
+
+        INFO("query #%u: q_mktid=%u,q_orderdate=%u,q_shipdate=%u,q_topn=%u",
+             query_id, ctx->q_mktid, ctx->q_orderdate, ctx->q_shipdate, ctx->q_topn);
+
+
+        //
+        // Parse scan date range
+        //
         const date_t scan_begin_orderdate = std::max<date_t>(
             ctx->q_shipdate - (g_shared->meta.max_shipdate_orderdate_diff - 1),
             MIN_TABLE_DATE);  // inclusive
@@ -1561,6 +1569,45 @@ void fn_loader_thread_use_index(const uint32_t tid) noexcept
 
 void fn_worker_thread_use_index(const uint32_t tid) noexcept
 {
+    //
+    // Parse query range
+    //
+    {
+        ASSERT(g_query_contexts != nullptr);
+
+        parse_query_scan_range();
+        g_shared->worker_sync_barrier.sync();  // this is necessary!
+        INFO("[%u] parse_query_scan_range() done", tid);
+    }
+
+
+    //
+    // Create g_output_write_thread if g_id == 0
+    //
+    if (tid == 0) {
+        g_output_write_thread = std::thread([]() {
+
+            for (uint32_t query_id = 0; query_id < g_query_count; ++query_id) {
+                query_context_t* const ctx = g_query_contexts[query_id];
+                ASSERT(ctx != nullptr, "query_id: %u", query_id);
+                ctx->done.wait_done();
+
+                ASSERT(ctx->output_length > 0);  // at least headers
+                size_t total_cnt = 0;
+                while (total_cnt < ctx->output_length) {
+                    const size_t cnt = C_CALL(write(
+                        STDOUT_FILENO,
+                        ctx->output + total_cnt,
+                        sizeof(char) * (ctx->output_length - total_cnt)));
+                    CHECK(cnt > 0, "write() failed. errno = %d (%s)", errno, strerror(errno));
+                    total_cnt += cnt;
+                }
+                CHECK(total_cnt == ctx->output_length);
+            }
+        });
+    }
+
+
     //
     // Map major index
     //
@@ -2296,7 +2343,6 @@ void use_index_initialize_before_fork() noexcept
             p += len;
 
             INFO("mktsegment: %u -> %.*s", mktid, (int)len, g_shared->all_mktsegments[mktid].name);
-            g_mktsegment_to_mktid[std::string(g_shared->all_mktsegments[mktid].name, len)] = mktid;
         }
         ASSERT(p == (uintptr_t)buffer + ctx.file_size);
 
@@ -2394,7 +2440,7 @@ void use_index_initialize_before_fork() noexcept
     // Parse queries
     //
     {
-        parse_queries();
+        prepare_query_context_space();
     }
 
 
@@ -2475,13 +2521,6 @@ void use_index_initialize_before_fork() noexcept
 
 void use_index_initialize_after_fork() noexcept
 {
-    // Parse query range
-    {
-        ASSERT(g_query_contexts != nullptr);
-
-        parse_query_scan_range();
-    }
-
     //
     // Map pretopn file
     //
@@ -2495,31 +2534,5 @@ void use_index_initialize_after_fork() noexcept
             g_pretopn_file.fd,
             0);
         INFO("[%u] g_pretopn_start_ptr: %p", g_id, g_pretopn_start_ptr);
-    }
-
-
-    //
-    // Create g_output_write_thread if g_id == 0
-    //
-    if (g_id == 0) {
-        g_output_write_thread = std::thread([]() {
-
-            for (uint32_t query_id = 0; query_id < g_query_count; ++query_id) {
-                query_context_t* const ctx = g_query_contexts[query_id];
-                ctx->done.wait_done();
-
-                ASSERT(ctx->output_length > 0);  // at least headers
-                size_t total_cnt = 0;
-                while (total_cnt < ctx->output_length) {
-                    const size_t cnt = C_CALL(write(
-                        STDOUT_FILENO,
-                        ctx->output + total_cnt,
-                        sizeof(char) * (ctx->output_length - total_cnt)));
-                    CHECK(cnt > 0, "write() failed. errno = %d (%s)", errno, strerror(errno));
-                    total_cnt += cnt;
-                }
-                CHECK(total_cnt == ctx->output_length);
-            }
-        });
     }
 }

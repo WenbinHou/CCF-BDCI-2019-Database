@@ -31,6 +31,8 @@
 #include <sys/uio.h>
 #include <sys/resource.h>
 #include <sys/shm.h>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -381,5 +383,18 @@ void set_thread_fifo_scheduler(const uint32_t nice_from_max_priority) noexcept
     }
 }
 
+
+template<char _Delimiter>
+__always_inline
+uint32_t __parse_u32(const char* s) noexcept
+{
+    uint32_t result = 0;
+    do {
+        ASSERT(*s >= '0' && *s <= '9', "Unexpected char: %c", *s);
+        result = result * 10 + (*s - '0');
+        ++s;
+    } while (*s != _Delimiter);
+    return result;
+}
 
 #endif  // !defined(_BDCI19_COMMON_H_INCLUDED_)
