@@ -2035,133 +2035,58 @@ static void worker_compute_pretopn_for_plate_mid(
     }
 #endif
 
-    const __m256i expend_mask = _mm256_set_epi32(
-        0x00000000, 0x00000000, 0x00FFFFFF, 0x00FFFFFF,
-        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
-
     const uint32_t* p = (const uint32_t*)bucket_ptr_mid;
     const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr_mid + bucket_size_mid);
-    const uint32_t* const end_align32 = p + __align_down(bucket_size_mid / sizeof(uint32_t), 32);
     ASSERT((uintptr_t)p % 32 == 0);
-    ASSERT((uintptr_t)end_align32 % 32 == 0);
-    ASSERT(end_align32 <= end);
 
-
-#define _CHECK_RESULT(N) \
-        do { \
-            ASSERT(total_expend_cent##N > 0); \
-            ASSERT(total_expend_cent##N < (1U << 28)); \
-            \
-            if (topn_count < CONFIG_EXPECT_MAX_TOPN) { \
-                const uint32_t orderkey##N = *(p + 7) & ~0xC0000000U; \
-                const uint32_t bucket_orderdate_diff##N = *(p + 7) >> 30; \
-                const date_t plate_orderdate_diff##N = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff##N; \
-                \
-                ASSERT(orderkey##N > 0); \
-                ASSERT(orderkey##N < (1U << 30)); \
-                ASSERT(orderkey##N <= g_max_orderkey, "orderkey" #N " too large: %u", orderkey##N); \
-                ASSERT(plate_orderdate_diff##N >= 0); \
-                ASSERT(plate_orderdate_diff##N < (1 << 6)); \
-                const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(orderkey##N) << 6 | (plate_orderdate_diff##N); \
-                \
-                topn_ptr[topn_count++] = value; \
-                if (__unlikely(topn_count == CONFIG_EXPECT_MAX_TOPN)) { \
-                    std::make_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
-                } \
-            } \
-            else { \
-                if (total_expend_cent##N >= (uint32_t)(topn_ptr[0] >> 36)) { \
-                    /*INFO("Wow!!!!!! mid bucket gets into pretopn!");*/ \
-                    const uint32_t orderkey##N = *(p + 7) & ~0xC0000000U; \
-                    const uint32_t bucket_orderdate_diff##N = *(p + 7) >> 30; \
-                    const date_t plate_orderdate_diff##N = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff##N; \
-                    \
-                    ASSERT(orderkey##N > 0); \
-                    ASSERT(orderkey##N < (1U << 30)); \
-                    ASSERT(orderkey##N <= g_max_orderkey, "orderkey" #N " too large: %u", orderkey##N); \
-                    ASSERT(plate_orderdate_diff##N >= 0); \
-                    ASSERT(plate_orderdate_diff##N < (1 << 6)); \
-                    const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(orderkey##N) << 6 | (plate_orderdate_diff##N); \
-                    \
-                    if (value > topn_ptr[0]) { \
-                        std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
-                        topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value; \
-                        std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
-                    } \
-                } \
-            } \
-        } while(false)
-
-    while (p < end_align32) {
-        const __m256i items1 = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
-        const __m256i items2 = _mm256_and_si256(_mm256_load_si256((__m256i*)p + 1), expend_mask);
-        const __m256i items3 = _mm256_and_si256(_mm256_load_si256((__m256i*)p + 2), expend_mask);
-        const __m256i items4 = _mm256_and_si256(_mm256_load_si256((__m256i*)p + 3), expend_mask);
-
-        // See https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
-        const __m256i tmp1 = _mm256_hadd_epi32(items1, items2);
-        const __m256i tmp2 = _mm256_hadd_epi32(items3, items4);
-        const __m256i tmp3 = _mm256_hadd_epi32(tmp1, tmp2);
-        const __m128i tmp3lo = _mm256_castsi256_si128(tmp3);
-        const __m128i tmp3hi = _mm256_extracti128_si256(tmp3, 1);
-        const __m128i sum = _mm_add_epi32(tmp3hi, tmp3lo);
-
-        const uint32_t total_expend_cent1 = _mm_extract_epi32(sum, 0);
-        const uint32_t total_expend_cent2 = _mm_extract_epi32(sum, 1);
-        const uint32_t total_expend_cent3 = _mm_extract_epi32(sum, 2);
-        const uint32_t total_expend_cent4 = _mm_extract_epi32(sum, 3);
-
-        _CHECK_RESULT(1);
-        p += 8;
-
-        _CHECK_RESULT(2);
-        p += 8;
-
-        _CHECK_RESULT(3);
-        p += 8;
-
-        _CHECK_RESULT(4);
-        p += 8;
-#undef _CHECK_RESULT
+    uint32_t curr_min_expend_cent;
+    if (__unlikely(topn_count < CONFIG_EXPECT_MAX_TOPN)) {
+        curr_min_expend_cent = 0;
+    }
+    else {
+        ASSERT(topn_count == CONFIG_EXPECT_MAX_TOPN);
+        curr_min_expend_cent = (uint32_t)(topn_ptr[0] >> 36);
     }
 
-    ASSERT(p == end_align32);
+
     while (p < end) {
+
+        const uint32_t total_expend_cent = p[6];
+        ASSERT(total_expend_cent > 0, "orderkey: %u", orderkey);
+        ASSERT(total_expend_cent < (1U << 28));
+        if (__likely(total_expend_cent < curr_min_expend_cent)) {
+            p += 8;
+            continue;
+        }
+
         const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
         ASSERT(orderkey > 0);
+        ASSERT(orderkey < (1U << 30));
+        ASSERT(orderkey <= g_max_orderkey, "orderkey too large: %u", orderkey);
+
         const uint32_t bucket_orderdate_diff = *(p + 7) >> 30;
         const date_t plate_orderdate_diff = bucket_base_orderdate_minus_plate_base_orderdate + bucket_orderdate_diff;
-        const __m256i items = _mm256_and_si256(_mm256_load_si256((__m256i*)p), expend_mask);
+        ASSERT(plate_orderdate_diff >= 0);
+        ASSERT(plate_orderdate_diff < (1 << 6));
+
         p += 8;
 
-        __m256i sum = _mm256_hadd_epi32(items, items);
-        sum = _mm256_hadd_epi32(sum, sum);
-        const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
-        ASSERT(total_expend_cent > 0);
+        const uint64_t value = (uint64_t)(total_expend_cent) << 36 | (uint64_t)(orderkey) << 6 | (plate_orderdate_diff);
 
-        {
-            ASSERT(orderkey > 0, "");
-            ASSERT(orderkey < (1U << 30));
-            ASSERT(orderkey <= g_max_orderkey, "orderkey too large: %u", orderkey);
-            ASSERT(total_expend_cent > 0, "orderkey: %u", orderkey);
-            ASSERT(total_expend_cent < (1U << 28));
-            ASSERT(plate_orderdate_diff >= 0);
-            ASSERT(plate_orderdate_diff < (1 << 6));
-            const uint64_t value = (uint64_t)(total_expend_cent) << 36 | (uint64_t)(orderkey) << 6 | (plate_orderdate_diff);
-
-            if (__unlikely(topn_count < CONFIG_EXPECT_MAX_TOPN)) {
-                topn_ptr[topn_count++] = value;
-                if (__unlikely(topn_count == CONFIG_EXPECT_MAX_TOPN)) {
-                    std::make_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
-                }
+        if (__unlikely(topn_count < CONFIG_EXPECT_MAX_TOPN)) {
+            topn_ptr[topn_count++] = value;
+            if (__unlikely(topn_count == CONFIG_EXPECT_MAX_TOPN)) {
+                std::make_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                curr_min_expend_cent = (uint32_t)(topn_ptr[0] >> 36);
             }
-            else {
-                if (value > topn_ptr[0]) {
-                    //INFO("Wow!!!!!! mid bucket gets into pretopn!");
-                    std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
-                    topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value;
-                    std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
-                }
+        }
+        else {
+            if (__likely(value > topn_ptr[0])) {
+                //INFO("Wow!!!!!! mid bucket gets into pretopn!");
+                std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value;
+                std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                curr_min_expend_cent = (uint32_t)(topn_ptr[0] >> 36);
             }
         }
     }
