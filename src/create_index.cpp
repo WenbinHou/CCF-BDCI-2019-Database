@@ -1390,13 +1390,13 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
         const auto append_current_order_to_index = [&]() {
             ASSERT(last_item_count >= COUNT_BASE + 1);
             ASSERT(last_item_count <= COUNT_BASE + 7);
-            last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
             ASSERT(last_total_expend_cent > 0);
 
 #if ENABLE_MID_INDEX
-            if (last_item_count >= COUNT_BASE + 7) {  // 8,7
-                ASSERT(last_item_count <= COUNT_BASE + 8);
+            if (last_item_count >= COUNT_BASE + 6) {  // 7,6
+                ASSERT(last_item_count <= COUNT_BASE + 7);
+                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
                 iovec& vec = bucket_data_major[last_bucket_id];
                 ASSERT(vec.iov_len < CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
@@ -1414,8 +1414,10 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                     maybe_submit_for_pwrite_major(vec, last_bucket_id);
                 }
             }
-            else if (last_item_count >= COUNT_BASE + 5) {  // 6,5
-                ASSERT(last_item_count <= COUNT_BASE + 6);
+            else if (last_item_count >= COUNT_BASE + 4) {  // 5,4
+                ASSERT(last_item_count <= COUNT_BASE + 5);
+                last_items[last_item_count++] = last_total_expend_cent;
+                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
                 iovec_expend_t& vec = bucket_data_mid[last_bucket_id];
                 if (vec.max_total_expend_cent < last_total_expend_cent) {
@@ -1437,8 +1439,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 }
             }
 #else  // !ENABLE_MID_INDEX
-            if (last_item_count >= COUNT_BASE + 5) {  // 8,7,6,5
-                ASSERT(last_item_count <= COUNT_BASE + 8);
+            if (last_item_count >= COUNT_BASE + 4) {  // 7,6,5,4
+                ASSERT(last_item_count <= COUNT_BASE + 7);
+                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
                 iovec& vec = bucket_data_major[last_bucket_id];
                 ASSERT(vec.iov_len < CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR);
@@ -1467,9 +1470,10 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             }
 #endif  // ENABLE_MID_INDEX
 
-            else {  // 4,3,2
-                ASSERT(last_item_count <= COUNT_BASE + 4);
-                ASSERT(last_item_count >= COUNT_BASE + 2);
+            else {  // 3,2,1
+                ASSERT(last_item_count <= COUNT_BASE + 3);
+                ASSERT(last_item_count >= COUNT_BASE + 1);
+                last_items[last_item_count++] = (last_orderdate - last_bucket_base_orderdate) << 30 | last_orderkey;
 
                 iovec_expend_t& vec = bucket_data_minor[last_bucket_id];
                 if (vec.max_total_expend_cent < last_total_expend_cent) {
@@ -2032,7 +2036,7 @@ static void worker_compute_pretopn_for_plate_mid(
 #endif
 
     const __m256i expend_mask = _mm256_set_epi32(
-        0x00000000, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+        0x00000000, 0x00000000, 0x00FFFFFF, 0x00FFFFFF,
         0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
 
     const uint32_t* p = (const uint32_t*)bucket_ptr_mid;

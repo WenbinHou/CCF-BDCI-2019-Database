@@ -925,10 +925,443 @@ void scan_major_index_check_orderdate_maybe_check_shipdate(
 
 
 #if ENABLE_MID_INDEX
-// TODO: implement them!
-#define scan_mid_index_nocheck_orderdate_maybe_check_shipdate   scan_major_index_nocheck_orderdate_maybe_check_shipdate
-#define scan_mid_index_check_orderdate_maybe_check_shipdate     scan_major_index_check_orderdate_maybe_check_shipdate
-#endif
+
+//template<bool _CheckShipdateDiff>
+//void scan_mid_index_nocheck_orderdate_maybe_check_shipdate(
+//    /*in*/ const uint32_t* const bucket_ptr,
+//    /*in*/ const uint64_t bucket_size,
+//    /*in*/ const date_t bucket_base_orderdate,
+//    /*inout*/ query_result_t* const results,
+//    /*inout*/ uint32_t& result_length,
+//    /*in*/ const uint32_t q_topn,
+//    /*in,opt*/ [[maybe_unused]] const date_t q_shipdate) noexcept
+//{
+//    const __m256i expend_mask = _mm256_set_epi32(
+//        0x00000000, 0x00000000, 0x00FFFFFF, 0x00FFFFFF,
+//        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
+//
+//    [[maybe_unused]] __m256i greater_than_value;
+//    if constexpr (_CheckShipdateDiff) {
+//        // shipdate = bucket_base_orderdate + diff
+//        // We want  shipdate > q_shipdate
+//        //  <==>    bucket_base_orderdate + diff > q_shipdate
+//        //  <==>    diff > q_shipdate - bucket_base_orderdate
+//        ASSERT((q_shipdate - bucket_base_orderdate) < (1 << 8));
+//        greater_than_value = _mm256_set1_epi32((q_shipdate - bucket_base_orderdate) << 24 | 0x00FFFFFF);
+//    }
+//
+//    ASSERT(bucket_size % (8 * sizeof(uint32_t)) == 0);
+//    const uint32_t* p = bucket_ptr;
+//    const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr + bucket_size);
+//    const uint32_t* const end_align32 = p + __align_down(bucket_size / sizeof(uint32_t), 32);
+//    while (p < end_align32) {
+//        const uint32_t orderdate_diff1 = *(p + 7) >> 30;
+//        const date_t orderdate1 = bucket_base_orderdate + orderdate_diff1;
+//        const uint32_t orderkey1 = *(p + 7) & ~0xC0000000U;
+//        __m256i items1 = _mm256_load_si256((__m256i*)p);
+//        p += 8;
+//        if constexpr (_CheckShipdateDiff) {
+//            const __m256i gt_mask1 = _mm256_cmpgt_epi32(items1, greater_than_value);
+//            items1 = _mm256_and_si256(items1, gt_mask1);
+//        }
+//        items1 = _mm256_and_si256(items1, expend_mask);
+//
+//        const uint32_t orderdate_diff2 = *(p + 7) >> 30;
+//        const date_t orderdate2 = bucket_base_orderdate + orderdate_diff2;
+//        const uint32_t orderkey2 = *(p + 7) & ~0xC0000000U;
+//        __m256i items2 = _mm256_load_si256((__m256i*)p);
+//        p += 8;
+//        if constexpr (_CheckShipdateDiff) {
+//            const __m256i gt_mask2 = _mm256_cmpgt_epi32(items2, greater_than_value);
+//            items2 = _mm256_and_si256(items2, gt_mask2);
+//        }
+//        items2 = _mm256_and_si256(items2, expend_mask);
+//
+//        const uint32_t orderdate_diff3 = *(p + 7) >> 30;
+//        const date_t orderdate3 = bucket_base_orderdate + orderdate_diff3;
+//        const uint32_t orderkey3 = *(p + 7) & ~0xC0000000U;
+//        __m256i items3 = _mm256_load_si256((__m256i*)p);
+//        p += 8;
+//        if constexpr (_CheckShipdateDiff) {
+//            const __m256i gt_mask3 = _mm256_cmpgt_epi32(items3, greater_than_value);
+//            items3 = _mm256_and_si256(items3, gt_mask3);
+//        }
+//        items3 = _mm256_and_si256(items3, expend_mask);
+//
+//        const uint32_t orderdate_diff4 = *(p + 7) >> 30;
+//        const date_t orderdate4 = bucket_base_orderdate + orderdate_diff4;
+//        const uint32_t orderkey4 = *(p + 7) & ~0xC0000000U;
+//        __m256i items4 = _mm256_load_si256((__m256i*)p);
+//        p += 8;
+//        if constexpr (_CheckShipdateDiff) {
+//            const __m256i gt_mask4 = _mm256_cmpgt_epi32(items4, greater_than_value);
+//            items4 = _mm256_and_si256(items4, gt_mask4);
+//        }
+//        items4 = _mm256_and_si256(items4, expend_mask);
+//
+//        // Inspired by
+//        //   https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions
+//        const __m256i tmp1 = _mm256_hadd_epi32(items1, items2);
+//        const __m256i tmp2 = _mm256_hadd_epi32(items3, items4);
+//        const __m256i tmp3 = _mm256_hadd_epi32(tmp1, tmp2);
+//        const __m128i tmp3lo = _mm256_castsi256_si128(tmp3);
+//        const __m128i tmp3hi = _mm256_extracti128_si256(tmp3, 1);
+//        const __m128i sum = _mm_add_epi32(tmp3hi, tmp3lo);
+//
+//        const uint32_t total_expend_cent1 = _mm_extract_epi32(sum, 0);
+//        const uint32_t total_expend_cent2 = _mm_extract_epi32(sum, 1);
+//        const uint32_t total_expend_cent3 = _mm_extract_epi32(sum, 2);
+//        const uint32_t total_expend_cent4 = _mm_extract_epi32(sum, 3);
+//
+//#define _CHECK_RESULT(N) \
+//            if (total_expend_cent##N > 0) { \
+//                query_result_t tmp; \
+//                tmp.orderdate = orderdate##N; \
+//                tmp.orderkey = orderkey##N; \
+//                tmp.total_expend_cent = total_expend_cent##N; \
+//                \
+//                if (result_length < q_topn) { \
+//                    results[result_length++] = tmp; \
+//                    if (__unlikely(result_length == q_topn)) { \
+//                        std::make_heap(results, results + result_length, std::greater<>()); \
+//                    } \
+//                } \
+//                else { \
+//                    ASSERT(result_length > 0); \
+//                    ASSERT(result_length == q_topn); \
+//                    if (tmp > results[0]) { \
+//                        std::pop_heap(results, results + result_length, std::greater<>()); \
+//                        results[result_length-1] = tmp; \
+//                        std::push_heap(results, results + result_length, std::greater<>()); \
+//                    } \
+//                } \
+//            }
+//
+//        _CHECK_RESULT(1)
+//        _CHECK_RESULT(2)
+//        _CHECK_RESULT(3)
+//        _CHECK_RESULT(4)
+//    }
+//
+//    while (p < end) {
+//        const uint32_t orderdate_diff = *(p + 7) >> 30;
+//        const date_t orderdate = bucket_base_orderdate + orderdate_diff;
+//        const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
+//        __m256i items = _mm256_load_si256((__m256i*)p);
+//        p += 8;
+//        if constexpr (_CheckShipdateDiff) {
+//            const __m256i gt_mask = _mm256_cmpgt_epi32(items, greater_than_value);
+//            //if (_mm256_testz_si256(gt_mask, gt_mask)) continue;  // not necessary
+//            items = _mm256_and_si256(items, gt_mask);
+//        }
+//        items = _mm256_and_si256(items, expend_mask);
+//
+//        __m256i sum = _mm256_hadd_epi32(items, items);
+//        sum = _mm256_hadd_epi32(sum, sum);
+//        const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
+//
+//        _CHECK_RESULT();
+//    }
+//#undef _CHECK_RESULT
+//}
+
+
+template<bool _CheckShipdateDiff>
+void scan_mid_index_nocheck_orderdate_maybe_check_shipdate(
+    /*in*/ const uint32_t* const bucket_ptr,
+    /*in*/ const uint64_t bucket_size,
+    /*in*/ const date_t bucket_base_orderdate,
+    /*inout*/ query_result_t* const results,
+    /*inout*/ uint32_t& result_length,
+    /*in*/ const uint32_t q_topn,
+    /*in,opt*/ [[maybe_unused]] const date_t q_shipdate) noexcept
+{
+    const __m256i expend_mask = _mm256_set_epi32(
+        0x00000000, 0x00000000, 0x00FFFFFF, 0x00FFFFFF,
+        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
+
+    [[maybe_unused]] __m256i greater_than_value;
+    if constexpr (_CheckShipdateDiff) {
+        // shipdate = bucket_base_orderdate + diff
+        // We want  shipdate > q_shipdate
+        //  <==>    bucket_base_orderdate + diff > q_shipdate
+        //  <==>    diff > q_shipdate - bucket_base_orderdate
+        ASSERT((q_shipdate - bucket_base_orderdate) < (1 << 8));
+        greater_than_value = _mm256_set1_epi32((q_shipdate - bucket_base_orderdate) << 24 | 0x00FFFFFF);
+    }
+
+    uint32_t curr_min_expend_cent;
+    if (result_length < q_topn) {
+        curr_min_expend_cent = 0;
+    }
+    else {
+        ASSERT(result_length == q_topn);
+        curr_min_expend_cent = results[0].total_expend_cent;
+    }
+
+    size_t item_count = 0;
+
+    ASSERT(bucket_size % (8 * sizeof(uint32_t)) == 0);
+    const uint32_t* p = bucket_ptr;
+    const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr + bucket_size);
+
+    date_t orderdate1, orderdate2, orderdate3, orderdate4;
+    uint32_t orderkey1, orderkey2, orderkey3, orderkey4;
+    __m256i items1, items2, items3, items4;
+    uint32_t total_expend_cent1, total_expend_cent2, total_expend_cent3, total_expend_cent4;
+
+    while (p < end) {
+        while (p < end) {
+            if (p[6] > curr_min_expend_cent) {
+                const uint32_t orderdate_diff1 = *(p + 7) >> 30;
+                orderdate1 = bucket_base_orderdate + orderdate_diff1;
+                orderkey1 = *(p + 7) & ~0xC0000000U;
+                items1 = _mm256_load_si256((__m256i*)p);
+                if constexpr (_CheckShipdateDiff) {
+                    const __m256i gt_mask1 = _mm256_cmpgt_epi32(items1, greater_than_value);
+                    items1 = _mm256_and_si256(items1, gt_mask1);
+                }
+                items1 = _mm256_and_si256(items1, expend_mask);
+
+                ++item_count;
+                break;
+            }
+            else {
+                p += 8;
+            }
+        }
+        if (p >= end) break;
+        p += 8;
+
+        while (p < end) {
+            if (p[6] > curr_min_expend_cent) {
+                const uint32_t orderdate_diff2 = *(p + 7) >> 30;
+                orderdate2 = bucket_base_orderdate + orderdate_diff2;
+                orderkey2 = *(p + 7) & ~0xC0000000U;
+                items2 = _mm256_load_si256((__m256i*)p);
+                if constexpr (_CheckShipdateDiff) {
+                    const __m256i gt_mask2 = _mm256_cmpgt_epi32(items2, greater_than_value);
+                    items2 = _mm256_and_si256(items2, gt_mask2);
+                }
+                items2 = _mm256_and_si256(items2, expend_mask);
+
+                ++item_count;
+                break;
+            }
+            else {
+                p += 8;
+            }
+        }
+        if (p >= end) break;
+        p += 8;
+
+        while (p < end) {
+            if (p[6] > curr_min_expend_cent) {
+                const uint32_t orderdate_diff3 = *(p + 7) >> 30;
+                orderdate3 = bucket_base_orderdate + orderdate_diff3;
+                orderkey3 = *(p + 7) & ~0xC0000000U;
+                items3 = _mm256_load_si256((__m256i*)p);
+                if constexpr (_CheckShipdateDiff) {
+                    const __m256i gt_mask3 = _mm256_cmpgt_epi32(items3, greater_than_value);
+                    items3 = _mm256_and_si256(items3, gt_mask3);
+                }
+                items3 = _mm256_and_si256(items3, expend_mask);
+
+                ++item_count;
+                break;
+            }
+            else {
+                p += 8;
+            }
+        }
+        if (p >= end) break;
+        p += 8;
+
+        while (p < end) {
+            if (p[6] > curr_min_expend_cent) {
+                const uint32_t orderdate_diff4 = *(p + 7) >> 30;
+                orderdate4 = bucket_base_orderdate + orderdate_diff4;
+                orderkey4 = *(p + 7) & ~0xC0000000U;
+                items4 = _mm256_load_si256((__m256i*)p);
+                if constexpr (_CheckShipdateDiff) {
+                    const __m256i gt_mask4 = _mm256_cmpgt_epi32(items4, greater_than_value);
+                    items4 = _mm256_and_si256(items4, gt_mask4);
+                }
+                items4 = _mm256_and_si256(items4, expend_mask);
+
+                ++item_count;
+                break;
+            }
+            else {
+                p += 8;
+            }
+        }
+        if (p >= end) break;
+        p += 8;
+
+
+#define _UPDATE_TOTAL_EXPEND_CENT_X() \
+        /* Inspired by */ \
+        /* https://stackoverflow.com/questions/9775538/fastest-way-to-do-horizontal-vector-sum-with-avx-instructions */ \
+        const __m256i tmp1 = _mm256_hadd_epi32(items1, items2); \
+        const __m256i tmp2 = _mm256_hadd_epi32(items3, items4); \
+        const __m256i tmp3 = _mm256_hadd_epi32(tmp1, tmp2); \
+        const __m128i tmp3lo = _mm256_castsi256_si128(tmp3); \
+        const __m128i tmp3hi = _mm256_extracti128_si256(tmp3, 1); \
+        const __m128i sum = _mm_add_epi32(tmp3hi, tmp3lo); \
+        \
+        total_expend_cent1 = _mm_extract_epi32(sum, 0); \
+        total_expend_cent2 = _mm_extract_epi32(sum, 1); \
+        total_expend_cent3 = _mm_extract_epi32(sum, 2); \
+        total_expend_cent4 = _mm_extract_epi32(sum, 3)
+
+#define _CHECK_RESULT(N) \
+            if (total_expend_cent##N > 0) { \
+                query_result_t tmp; \
+                tmp.orderdate = orderdate##N; \
+                tmp.orderkey = orderkey##N; \
+                tmp.total_expend_cent = total_expend_cent##N; \
+                \
+                if (result_length < q_topn) { \
+                    results[result_length++] = tmp; \
+                    if (__unlikely(result_length == q_topn)) { \
+                        std::make_heap(results, results + result_length, std::greater<>()); \
+                        curr_min_expend_cent = results[0].total_expend_cent; \
+                    } \
+                } \
+                else { \
+                    ASSERT(result_length > 0); \
+                    ASSERT(result_length == q_topn); \
+                    if (tmp > results[0]) { \
+                        std::pop_heap(results, results + result_length, std::greater<>()); \
+                        results[result_length-1] = tmp; \
+                        std::push_heap(results, results + result_length, std::greater<>()); \
+                        curr_min_expend_cent = results[0].total_expend_cent; \
+                    } \
+                } \
+            }
+
+        _UPDATE_TOTAL_EXPEND_CENT_X();
+        _CHECK_RESULT(1)
+        _CHECK_RESULT(2)
+        _CHECK_RESULT(3)
+        _CHECK_RESULT(4)
+    }
+
+
+    _UPDATE_TOTAL_EXPEND_CENT_X();
+    switch (item_count % 4) {
+        case 3:
+            _CHECK_RESULT(3)
+            [[fallthrough]];
+        case 2:
+            _CHECK_RESULT(2)
+            [[fallthrough]];
+        case 1:
+            _CHECK_RESULT(1)
+            [[fallthrough]];
+        case 0:
+            break;
+    }
+
+#undef _UPDATE_TOTAL_EXPEND_CENT_X
+#undef _CHECK_RESULT
+}
+
+
+template<bool _CheckShipdateDiff>
+void scan_mid_index_check_orderdate_maybe_check_shipdate(
+    /*in*/ const uint32_t* const bucket_ptr,
+    /*in*/ const uint64_t bucket_size,
+    /*in*/ const date_t bucket_base_orderdate,
+    /*in*/ const date_t q_orderdate,
+    /*inout*/ query_result_t* const results,
+    /*inout*/ uint32_t& result_length,
+    /*in*/ const uint32_t q_topn,
+    /*in,opt*/ [[maybe_unused]] const date_t q_shipdate) noexcept
+{
+    const __m256i expend_mask = _mm256_set_epi32(
+        0x00000000, 0x00000000, 0x00FFFFFF, 0x00FFFFFF,
+        0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
+
+    [[maybe_unused]] __m256i greater_than_value;
+    if constexpr (_CheckShipdateDiff) {
+        // shipdate = bucket_base_orderdate + diff
+        // We want  shipdate > q_shipdate
+        //  <==>    bucket_base_orderdate + diff > q_shipdate
+        //  <==>    diff > q_shipdate - bucket_base_orderdate
+        ASSERT(q_shipdate >= bucket_base_orderdate);
+        ASSERT((q_shipdate - bucket_base_orderdate) < (1 << 8));
+        greater_than_value = _mm256_set1_epi32((q_shipdate - bucket_base_orderdate) << 24 | 0x00FFFFFF);
+    }
+
+    ASSERT(bucket_size % (8 * sizeof(uint32_t)) == 0);
+    const uint32_t* p = bucket_ptr;
+    const uint32_t* const end = (uint32_t*)((uintptr_t)bucket_ptr + bucket_size);
+
+    uint32_t curr_min_expend_cent;
+    if (result_length < q_topn) {
+        curr_min_expend_cent = 0;
+    }
+    else {
+        ASSERT(result_length == q_topn);
+        curr_min_expend_cent = results[0].total_expend_cent;
+    }
+
+    while (p < end) {
+        const uint32_t orderdate_diff = *(p + 7) >> 30;
+        const date_t orderdate = bucket_base_orderdate + orderdate_diff;
+        if (orderdate >= q_orderdate) {
+            p += 8;
+            continue;
+        }
+        if (*(p + 6) < curr_min_expend_cent) {
+            p += 8;
+            continue;
+        }
+
+        const uint32_t orderkey = *(p + 7) & ~0xC0000000U;
+        __m256i items = _mm256_load_si256((__m256i*)p);
+        p += 8;
+        if constexpr (_CheckShipdateDiff) {
+            const __m256i gt_mask = _mm256_cmpgt_epi32(items, greater_than_value);
+            //if (_mm256_testz_si256(gt_mask, gt_mask)) continue;
+            items = _mm256_and_si256(items, gt_mask);
+        }
+        items = _mm256_and_si256(items, expend_mask);
+
+        __m256i sum = _mm256_hadd_epi32(items, items);
+        sum = _mm256_hadd_epi32(sum, sum);
+        const uint32_t total_expend_cent = _mm256_extract_epi32(sum, 0) + _mm256_extract_epi32(sum, 4);
+
+        if (total_expend_cent > 0) {
+            query_result_t tmp;
+            tmp.orderdate = orderdate;
+            tmp.orderkey = orderkey;
+            tmp.total_expend_cent = total_expend_cent;
+
+            if (result_length < q_topn) {
+                results[result_length++] = tmp;
+                if (__unlikely(result_length == q_topn)) {
+                    std::make_heap(results, results + result_length, std::greater<>());
+                    curr_min_expend_cent = results[0].total_expend_cent;
+                }
+            }
+            else {
+                ASSERT(result_length > 0);
+                ASSERT(result_length == q_topn);
+                if (tmp > results[0]) {
+                    std::pop_heap(results, results + result_length, std::greater<>());
+                    results[result_length-1] = tmp;
+                    std::push_heap(results, results + result_length, std::greater<>());
+                    curr_min_expend_cent = results[0].total_expend_cent;
+                }
+            }
+        }
+    }
+}
+
+#endif  // ENABLE_MID_INDEX
 
 
 __always_inline
