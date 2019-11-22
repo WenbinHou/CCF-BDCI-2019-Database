@@ -61,6 +61,8 @@ namespace
     std::atomic_uint64_t* g_buckets_endoffset_mid = nullptr;  // [g_shared->total_buckets]
 #endif
     std::atomic_uint64_t* g_buckets_endoffset_minor = nullptr;  // [g_shared->total_buckets]
+
+    std::uint64_t g_orders_file_max_clear_cache_offset = 0;
 }
 
 
@@ -218,10 +220,9 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
 
 #else
         // TODO: adjust this!
-        const uint64_t clear_size = g_orders_file.file_size;
-//        const uint64_t clear_size = std::min<uint64_t>(
-//            g_orders_file.file_size,
-//            sizeof(uint32_t) * g_max_orderkey * 6);
+        g_orders_file_max_clear_cache_offset = __align_down(
+            g_orders_file.file_size * 3 / 5,
+            PAGE_SIZE);
         //TODO: const uint32_t free_mem = mem_get_free_bytes();
         // Make use of free memory to reduce page cache clearing?
 
@@ -235,7 +236,7 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
             g_orders_file.file_size,
             g_orders_file.fd,
             g_orders_mapping_queue,
-            clear_size);
+            g_orders_file_max_clear_cache_offset);
 #endif
     }
 
@@ -657,6 +658,21 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
         g_txt_mapping_bag.return_back(part_index);
 #endif
     }
+
+    DEBUG("[%u] now unmap! worker_load_orders_multi_part()", tid);
+
+    //
+    // Unmap mapped orders texts to allow for clearing page cache
+    //
+    g_txt_mapping_bag.unsafe_for_each([&](index32_t& part_index) {
+        ASSERT(part_index < CONFIG_LOAD_TXT_BUFFER_COUNT);
+        mapped_file_part_overlapped_t& part = g_txt_mapping_buffers[part_index];
+        if (__likely(part.fd == g_orders_file.fd)) {
+            void* const ptr = (void*)((uintptr_t)g_txt_mapping_buffer_start_ptr + (uintptr_t)part_index * TXT_MAPPING_BUFFER_SIZE);
+            DEBUG(munmap(ptr, TXT_MAPPING_BUFFER_SIZE));
+            INFO("[%u] unmap orders for part_index=%u", tid, part_index);
+        }
+    });
 
     INFO("[%u] done worker_load_orders_multi_part()", tid);
 }
@@ -1165,9 +1181,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             //INFO("[%u] <2> pwrite! current: bucket_buffer_id_major=%u,iov_base=%p",
             //     g_id, bucket_buffer_id_major, vec.iov_base);
 
-            for (uint32_t i = 1; i < vec_count; ++i) {
-                extra.major_bag.return_back(buffer_ids[i]);
-            }
+            extra.major_bag.return_back_many(&buffer_ids[1], vec_count - 1);
 
             // We just keep using "vec", but clear its iov_len
             // bucket_buffer_id_major not changed
@@ -1229,9 +1243,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
             //INFO("[%u] <2> pwrite! current: bucket_buffer_id_mid=%u,iov_base=%p",
             //     g_id, bucket_buffer_id_mid, vec.iov_base);
 
-            for (uint32_t i = 1; i < vec_count; ++i) {
-                extra.mid_bag.return_back(buffer_ids[i]);
-            }
+            extra.mid_bag.return_back_many(&buffer_ids[1], vec_count - 1);
 
             // We just keep using "vec", but clear its iov_len
             // bucket_buffer_id_mid not changed
@@ -1286,9 +1298,7 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 file_offset));
             CHECK(cnt == vec_total_len);
 
-            for (uint32_t i = 1; i < vec_count; ++i) {
-                extra.minor_bag.return_back(buffer_ids[i]);
-            }
+            extra.minor_bag.return_back_many(&buffer_ids[1], vec_count - 1);
 
             // We just keep using "vec", but clear its iov_len
             // bucket_buffer_id_minor not changed
@@ -2683,16 +2693,32 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
             ASSERT(g_orders_file.fd > 0);
             ASSERT(g_orders_file.file_size > 0);
 
-            /*
-            uint64_t clear_size = std::min<uint64_t>(
-                g_orders_file.file_size,
-                sizeof(uint32_t) * g_max_orderkey * 6);
-            //TODO: const uint32_t free_mem = mem_get_free_bytes();
-            // Make use of free memory to reduce page cache clearing?
+            ASSERT(g_orders_file_max_clear_cache_offset > 0);
+            constexpr const uint64_t INSTANT_FREE_SIZE = 1024ULL * 1024 * 1024 * 3;
+            __fadvice_dont_need(
+                g_orders_file.fd,
+                g_orders_file_max_clear_cache_offset,
+                INSTANT_FREE_SIZE);
+            INFO("__fadvice_dont_need page cache for orders file: done beginnings");
 
-            __fadvice_dont_need(g_orders_file.fd, 0, clear_size);
-            INFO("__fadvice_dont_need page cache for orders file (clear_size: %lu)", clear_size);
-             */
+            std::thread([&]() {
+                constexpr const uint64_t STEP_FREE_SIZE = 1024ULL * 1024 * 32;
+                uint64_t pos = __align_down(g_orders_file.file_size, STEP_FREE_SIZE);
+                const uint64_t curr_freed_pos = g_orders_file_max_clear_cache_offset + INSTANT_FREE_SIZE;
+                while (pos >= curr_freed_pos) {
+                    __fadvice_dont_need(
+                        g_orders_file.fd,
+                        pos,
+                        STEP_FREE_SIZE);
+                    pos -= STEP_FREE_SIZE;
+
+                    // This is interesting!
+                    // Give some time for loaders to load lineitem texts
+                    std::this_thread::sleep_for(std::chrono::microseconds(3000));
+                    //std::this_thread::yield();
+                }
+                INFO("__fadvice_dont_need page cache for orders file: done all (background thread done)");
+            }).detach();
 
             //system("free -h");
         });
