@@ -43,7 +43,7 @@
 
 
 // Number of 2MB-hugepages used by program
-#define CONFIG_EXTRA_HUGE_PAGES             (2500)  // 5000MB
+#define CONFIG_EXTRA_HUGE_PAGES             (2560)  // 5120 MB
 
 
 // How many byte per mmap() when loading original text files?
@@ -83,12 +83,12 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET == 4);  // TODO: adjust CONFIG_INDEX_
 #define CONFIG_INDEX_TLS_BUFFER_SIZE_MID        (4096U * 3)  // Tune factor as necessary
 // This is the size for (item_count == 1,2,3)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 2)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 1)  // Tune factor as necessary
 
 #else  // !ENABLE_MID_INDEX
 // This is the size for (item_count == 4,5,6,7)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MAJOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 30)  // Tune factor as necessary
-#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 6)  // Tune factor as necessary
+#define CONFIG_INDEX_TLS_BUFFER_SIZE_MAJOR      (4096U * 5)  // Tune factor as necessary
 // This is the size for (item_count == 1,2,3)
 #define CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR   (CONFIG_ORDERDATES_PER_BUCKET * 1048576U * 10)  // Tune factor as necessary
 #define CONFIG_INDEX_TLS_BUFFER_SIZE_MINOR      (4096U * 2)  // Tune factor as necessary
@@ -96,7 +96,7 @@ static_assert(CONFIG_ORDERDATES_PER_BUCKET == 4);  // TODO: adjust CONFIG_INDEX_
 
 // How many extra buffers for each bucket?
 // This saves pwrite() syscall a lot!
-#define CONFIG_INDEX_EXTRA_BUFFER_COUNT         (18)
+#define CONFIG_INDEX_EXTRA_BUFFER_COUNT         (26)
 static_assert(CONFIG_INDEX_EXTRA_BUFFER_COUNT > 0);
 
 
