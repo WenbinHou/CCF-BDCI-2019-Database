@@ -404,7 +404,7 @@ static void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid)
             ASSERT(last_custkey % 3 == 0);
             uint8_t write_value = 0;
 
-            #pragma GCC unroll 3
+            //TODO: #pragma GCC unroll 3
             for (uint32_t inner = 0; inner < 3; ++inner) {
                 if (__unlikely(p >= end)) {
                     ASSERT(p == end);
@@ -770,7 +770,7 @@ const char* skip_one_orderkey_in_lineitem(const char* p) noexcept
 }
 
 
-void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
+void worker_load_lineitem_multi_part([[maybe_unused]] const uint32_t tid) noexcept
 {
     ASSERT(g_orderkey_to_order.ptr != nullptr);
     const order_t* const orderkey_to_order = g_orderkey_to_order.ptr;
