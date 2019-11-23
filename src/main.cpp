@@ -22,30 +22,11 @@ static void detect_preparing_page_cache() noexcept
     const uint32_t nr_2mb = mem_get_nr_hugepages_2048kB();
     DEBUG("nr_hugepages (2048kB): %u", nr_2mb);
 
-#if ENABLE_SHM_CACHE_TXT
-    const uint32_t require_nr_2mb =
-        __div_up(g_customer_file.file_size, 1024 * 1024 * 2) +
-        __div_up(g_orders_file.file_size, 1024 * 1024 * 2) +
-        __div_up(g_lineitem_file.file_size, 1024 * 1024 * 2) +
-        CONFIG_EXTRA_HUGE_PAGES;
-#else
     const uint32_t require_nr_2mb = CONFIG_EXTRA_HUGE_PAGES;
-#endif
     DEBUG("require_nr_2mb: %u", require_nr_2mb);
 
     if (nr_2mb == require_nr_2mb) {
         do {
-#if ENABLE_SHM_CACHE_TXT
-            if (!g_customer_shm.init_fixed(SHMKEY_TXT_CUSTOMER, g_customer_file.file_size, false)) {
-                break;
-            }
-            if (!g_orders_shm.init_fixed(SHMKEY_TXT_ORDERS, g_orders_file.file_size, false)) {
-                break;
-            }
-            if (!g_lineitem_shm.init_fixed(SHMKEY_TXT_LINEITEM, g_lineitem_file.file_size, false)) {
-                break;
-            }
-#else  // !ENABLE_SHM_CACHE_TXT
             // Test are txt files in page cache?
             const auto is_file_in_page_cache = [](const load_file_context& ctx) {
                 ASSERT(ctx.fd > 0);
@@ -83,7 +64,6 @@ static void detect_preparing_page_cache() noexcept
             if (!is_file_in_page_cache(g_lineitem_file)) break;
             INFO("is_file_in_page_cache(g_lineitem_file): true");
 
-#endif  // ENABLE_SHM_CACHE_TXT
             g_is_preparing_page_cache = false;
         } while(false);
     }
@@ -92,15 +72,6 @@ static void detect_preparing_page_cache() noexcept
     }
 
     INFO("g_is_preparing_page_cache: %d", (int)g_is_preparing_page_cache);
-
-    // TODO
-    if (g_is_preparing_page_cache) {
-#if ENABLE_SHM_CACHE_TXT
-        PANIC("TODO: preparing page cache not implemented yet!");
-#else
-        // Do nothing
-#endif
-    }
 }
 
 
@@ -378,15 +349,9 @@ int main(int argc, char* argv[])
         const char* const orders_text_path = argv[2];
         const char* const lineitem_text_path = argv[3];
 
-#if ENABLE_SHM_CACHE_TXT
-        __open_file_read_direct(customer_text_path, &g_customer_file);
-        __open_file_read_direct(orders_text_path, &g_orders_file);
-        __open_file_read_direct(lineitem_text_path, &g_lineitem_file);
-#else
         __open_file_read(customer_text_path, &g_customer_file);
         __open_file_read(orders_text_path, &g_orders_file);
         __open_file_read(lineitem_text_path, &g_lineitem_file);
-#endif
 
         detect_preparing_page_cache();
     }
@@ -407,15 +372,9 @@ int main(int argc, char* argv[])
             const char* const orders_text_path = argv[2];
             const char* const lineitem_text_path = argv[3];
 
-#if ENABLE_SHM_CACHE_TXT
-            __open_file_read_direct(customer_text_path, &g_customer_file);
-            __open_file_read_direct(orders_text_path, &g_orders_file);
-            __open_file_read_direct(lineitem_text_path, &g_lineitem_file);
-#else
             __open_file_read(customer_text_path, &g_customer_file);
             __open_file_read(orders_text_path, &g_orders_file);
             __open_file_read(lineitem_text_path, &g_lineitem_file);
-#endif
         }
     }
 

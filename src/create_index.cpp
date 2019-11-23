@@ -177,12 +177,6 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
 
     // Load customer file to memory
     {
-#if ENABLE_SHM_CACHE_TXT
-        // Do nothing
-        ASSERT(g_customer_shm.shmid >= 0);
-        ASSERT(g_customer_shm.ptr != nullptr);
-
-#else
         load_file_overlapped<
                 CONFIG_CUSTOMER_PART_BODY_SIZE,
                 CONFIG_PART_OVERLAPPED_SIZE,
@@ -194,18 +188,11 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
             g_customer_file.fd,
             g_customer_mapping_queue,
             /*dummy*/ 0);
-#endif
     }
 
 
     // Load orders file to memory
     {
-#if ENABLE_SHM_CACHE_TXT
-        // Do nothing
-        ASSERT(g_orders_shm.shmid >= 0);
-        ASSERT(g_orders_shm.ptr != nullptr);
-
-#else
         // TODO: adjust this!
         g_orders_file_max_clear_cache_offset = __align_down(
             g_orders_file.file_size * 3 / 5,
@@ -224,18 +211,11 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
             g_orders_file.fd,
             g_orders_mapping_queue,
             g_orders_file_max_clear_cache_offset);
-#endif
     }
 
 
     // Load lineitem file to memory
     {
-#if ENABLE_SHM_CACHE_TXT
-        // Do nothing
-        ASSERT(g_lineitem_shm.shmid >= 0);
-        ASSERT(g_lineitem_shm.ptr != nullptr);
-
-#else
         load_file_overlapped<
             CONFIG_LINEITEM_PART_BODY_SIZE,
             CONFIG_PART_OVERLAPPED_SIZE,
@@ -247,7 +227,6 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
             g_lineitem_file.fd,
             g_lineitem_mapping_queue,
             /*dummy*/ 0);
-#endif
     }
 
 
@@ -281,44 +260,7 @@ void fn_loader_thread_create_index([[maybe_unused]] const uint32_t tid) noexcept
 
 static void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid) noexcept
 {
-#if ENABLE_SHM_CACHE_TXT
-    std::atomic_uint64_t& shared_offset = g_shared->customer_file_shared_offset;
-    #if ENABLE_ASSERTION
-    g_shared->worker_sync_barrier.run_once_and_sync([&]() {
-        ASSERT(shared_offset.load() == 0);
-    });
-    #endif
-
-    ASSERT(g_customer_shm.shmid >= 0);
-
-    ASSERT(g_customer_shm.size_in_byte == g_customer_file.file_size);
-    const uint64_t file_size = g_customer_shm.size_in_byte;
-
-    void* const base_ptr = g_customer_shm.ptr;
-    ASSERT(base_ptr != nullptr);
-
-#endif
-
     while (true) {
-
-#if ENABLE_SHM_CACHE_TXT
-        const uint64_t off = shared_offset.fetch_add(CONFIG_CUSTOMER_PART_BODY_SIZE);
-        if (off >= file_size) break;
-
-        mapped_file_part_overlapped_t part; // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init)
-        part.file_offset = off;
-        if (__unlikely(off + CONFIG_CUSTOMER_PART_BODY_SIZE + CONFIG_PART_OVERLAPPED_SIZE >= file_size)) {  // this is last
-            part.desired_size = file_size - off;
-            part.map_size = file_size - off;
-        }
-        else {
-            part.desired_size = CONFIG_CUSTOMER_PART_BODY_SIZE;
-            part.map_size = CONFIG_CUSTOMER_PART_BODY_SIZE + CONFIG_PART_OVERLAPPED_SIZE;
-        }
-
-        void* const ptr = (void*)((uintptr_t)base_ptr + off);
-
-#else  // !ENABLE_SHM_CACHE_TXT
         index32_t part_index;
         if (!g_customer_mapping_queue.pop(&part_index)) break;
         ASSERT(part_index < CONFIG_LOAD_TXT_BUFFER_COUNT);
@@ -326,7 +268,6 @@ static void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid)
 
         ASSERT(g_txt_mapping_buffer_start_ptr != nullptr);
         void* const ptr = (void*)((uintptr_t)g_txt_mapping_buffer_start_ptr + (uintptr_t)part_index * TXT_MAPPING_BUFFER_SIZE);
-#endif
         const char* p = (const char*)ptr;
         const char* end = p + part.desired_size;
 
@@ -487,10 +428,7 @@ static void worker_load_customer_multi_part([[maybe_unused]] const uint32_t tid)
             g_custkey_to_mktid.ptr[write_offset++] = write_value;
         }
 
-#if ENABLE_SHM_CACHE_TXT
-#else  // !ENABLE_SHM_CACHE_TXT
         g_txt_mapping_bag.return_back(part_index);
-#endif  // ENABLE_SHM_CACHE_TXT
     }
 
     INFO("[%u] done worker_load_customer_multi_part()", tid);
@@ -501,44 +439,8 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
 {
     [[maybe_unused]] const uint8_t mktid_count = g_shared->mktid_count;
 
-#if ENABLE_SHM_CACHE_TXT
-    std::atomic_uint64_t& shared_offset = g_shared->orders_file_shared_offset;
-    #if ENABLE_ASSERTION
-    g_shared->worker_sync_barrier.run_once_and_sync([&]() {
-        ASSERT(shared_offset.load() == 0);
-    });
-    #endif
-
-    ASSERT(g_orders_shm.shmid >= 0);
-
-    void* const base_ptr = g_orders_shm.ptr;
-    ASSERT(base_ptr != nullptr);
-
-    ASSERT(g_orders_shm.size_in_byte == g_orders_file.file_size);
-
-    const uint64_t file_size = g_orders_shm.size_in_byte;
-#endif
-
     while (true) {
 
-#if ENABLE_SHM_CACHE_TXT
-        const uint64_t off = shared_offset.fetch_add(CONFIG_ORDERS_PART_BODY_SIZE);
-        if (off >= file_size) break;
-
-        mapped_file_part_overlapped_t part; // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init)
-        part.file_offset = off;
-        if (__unlikely(off + CONFIG_ORDERS_PART_BODY_SIZE + CONFIG_PART_OVERLAPPED_SIZE >= file_size)) {  // this is last
-            part.desired_size = file_size - off;
-            part.map_size = file_size - off;
-        }
-        else {
-            part.desired_size = CONFIG_ORDERS_PART_BODY_SIZE;
-            part.map_size = CONFIG_ORDERS_PART_BODY_SIZE + CONFIG_PART_OVERLAPPED_SIZE;
-        }
-
-        void* const ptr = (void*)((uintptr_t)base_ptr + off);
-
-#else  // !ENABLE_SHM_CACHE_TXT
         index32_t part_index;
         if (!g_orders_mapping_queue.pop(&part_index)) break;
         ASSERT(part_index < CONFIG_LOAD_TXT_BUFFER_COUNT);
@@ -546,7 +448,6 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
 
         ASSERT(g_txt_mapping_buffer_start_ptr != nullptr);
         void* const ptr = (void*)((uintptr_t)g_txt_mapping_buffer_start_ptr + (uintptr_t)part_index * TXT_MAPPING_BUFFER_SIZE);
-#endif  // ENABLE_SHM_CACHE_TXT
 
         const char* p = (const char*)ptr;
         const char* end = p + part.desired_size;
@@ -640,10 +541,7 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
         }
 #endif
 
-#if ENABLE_SHM_CACHE_TXT
-#else
         g_txt_mapping_bag.return_back(part_index);
-#endif
     }
 
     DEBUG("[%u] now unmap! worker_load_orders_multi_part()", tid);
@@ -1311,44 +1209,8 @@ void worker_load_lineitem_multi_part([[maybe_unused]] const uint32_t tid) noexce
         last_items[i] = (/*dummy*/0 << 24) | 0x00000000;
     }
 
-    
-#if ENABLE_SHM_CACHE_TXT
-    std::atomic_uint64_t& shared_offset = g_shared->lineitem_file_shared_offset;
-    #if ENABLE_ASSERTION
-    g_shared->worker_sync_barrier.run_once_and_sync([&]() {
-        ASSERT(shared_offset.load() == 0);
-    });
-    #endif
-
-    ASSERT(g_lineitem_shm.shmid >= 0);
-
-    ASSERT(g_lineitem_shm.size_in_byte == g_lineitem_file.file_size);
-    const uint64_t file_size = g_lineitem_shm.size_in_byte;
-
-    void* const base_ptr = g_lineitem_shm.ptr;
-    ASSERT(base_ptr != nullptr);
-#endif  // ENABLE_SHM_CACHE_TXT
 
     while (true) {
-
-#if ENABLE_SHM_CACHE_TXT
-        const uint64_t off = shared_offset.fetch_add(CONFIG_LINEITEM_PART_BODY_SIZE);
-        if (off >= file_size) break;
-
-        mapped_file_part_overlapped_t part; // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init)
-        part.file_offset = off;
-        if (__unlikely(off + CONFIG_LINEITEM_PART_BODY_SIZE + CONFIG_PART_OVERLAPPED_SIZE >= file_size)) {  // this is last
-            part.desired_size = file_size - off;
-            part.map_size = file_size - off;
-        }
-        else {
-            part.desired_size = CONFIG_LINEITEM_PART_BODY_SIZE;
-            part.map_size = CONFIG_LINEITEM_PART_BODY_SIZE + CONFIG_PART_OVERLAPPED_SIZE;
-        }
-
-        void* const ptr = (void*)((uintptr_t)base_ptr + off);
-
-#else  // !ENABLE_SHM_CACHE_TXT
         index32_t part_index;
         if (!g_lineitem_mapping_queue.pop(&part_index)) break;
         ASSERT(part_index < CONFIG_LOAD_TXT_BUFFER_COUNT);
@@ -1356,7 +1218,6 @@ void worker_load_lineitem_multi_part([[maybe_unused]] const uint32_t tid) noexce
 
         ASSERT(g_txt_mapping_buffer_start_ptr != nullptr);
         void* const ptr = (void*)((uintptr_t)g_txt_mapping_buffer_start_ptr + (uintptr_t)part_index * TXT_MAPPING_BUFFER_SIZE);
-#endif
         const char* p = (const char*)ptr;
         const char* valid_end = p + part.desired_size;
 
@@ -1664,10 +1525,7 @@ void worker_load_lineitem_multi_part([[maybe_unused]] const uint32_t tid) noexce
             }
         }
 
-#if ENABLE_SHM_CACHE_TXT
-#else
         g_txt_mapping_bag.return_back(part_index);
-#endif
     }
 
 
@@ -2589,32 +2447,7 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
     // Parse loaded orders table
     {
         worker_load_orders_multi_part(tid);
-#if ENABLE_SHM_CACHE_TXT
-        ASSERT(g_orders_shm.ptr != nullptr);
-        g_orders_shm.detach();  // then g_orders_shm should have been removed
-        ASSERT(g_orders_shm.ptr == nullptr);
 
-        g_shared->worker_sync_barrier.sync_and_run_once([]() {
-            // Release huge pages for orders txt
-            const uint64_t require_nr_2mb =
-                __div_up(g_customer_file.file_size, 1024 * 1024 * 2) +
-                __div_up(g_lineitem_file.file_size, 1024 * 1024 * 2) +
-                CONFIG_EXTRA_HUGE_PAGES;
-
-            const bool success = mem_set_nr_hugepages_2048kB(require_nr_2mb);
-            CHECK(success, "Can't adjust nr_hugepages to %lu", require_nr_2mb);
-            INFO("adjusted nr_hugepages to %lu", require_nr_2mb);
-
-            #if ENABLE_ASSERTION
-            const uint64_t actual_nr_2mb = mem_get_nr_hugepages_2048kB();
-            ASSERT(actual_nr_2mb == require_nr_2mb,
-                "Expect actual_nr_2mb == require_nr_2mb: %lu == %lu", actual_nr_2mb, require_nr_2mb);
-            #endif
-
-            //system("free -h");
-        });
-
-#else  // !ENABLE_SHM_CACHE_TXT
         g_shared->worker_sync_barrier.sync_and_run_once([]() {
             ASSERT(g_orders_file.fd > 0);
             ASSERT(g_orders_file.file_size > 0);
@@ -2648,7 +2481,6 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
 
             //system("free -h");
         });
-#endif  // ENABLE_SHM_CACHE_TXT
 
         worker_load_orders_custkey_from_orderkey(tid, g_shared->orderkey_custkey_shared_counter);
         g_shared->worker_sync_barrier.sync();
@@ -2843,10 +2675,6 @@ void create_index_initialize_before_fork() noexcept
     //
     // Calculate g_max_custkey
     //
-#if ENABLE_SHM_CACHE_TXT
-    PANIC("TODO! Get g_max_custkey");
-
-#else
     {
         char buffer[PAGE_SIZE];
         C_CALL(pread(
@@ -2864,16 +2692,11 @@ void create_index_initialize_before_fork() noexcept
         }
         INFO("g_max_custkey: %u", g_max_custkey);
     }
-#endif
 
 
     //
     // Calculate g_max_orderkey
     //
-#if ENABLE_SHM_CACHE_TXT
-    PANIC("TODO! Get g_max_orderkey");
-
-#else
     {
         char buffer[PAGE_SIZE];
         C_CALL(pread(
@@ -2893,41 +2716,7 @@ void create_index_initialize_before_fork() noexcept
         g_max_orderkey = (g_max_orderkey & 0b111) | ((g_max_orderkey >> 2) & ~0b1);
         INFO("g_max_orderkey: %u", g_max_orderkey);
     }
-#endif
 
-
-    // Initialize g_customer_shm, g_orders_shm, g_lineitem_shm
-    if (g_is_preparing_page_cache) {
-#if ENABLE_SHM_CACHE_TXT
-        PANIC("TODO!");
-#else  // !ENABLE_SHM_CACHE_TXT
-        // Do nothing
-#endif  // ENABLE_SHM_CACHE_TXT
-    }
-    else {
-#if ENABLE_SHM_CACHE_TXT
-        ASSERT(g_customer_file.file_size > 0);
-        ASSERT(g_customer_shm.size_in_byte == g_customer_file.file_size);
-        ASSERT(g_customer_shm.shmid >= 0);
-        ASSERT(g_customer_shm.ptr != nullptr);
-        INFO("g_customer_shm: shmid=%d, ptr=%p, size0x%lx", g_customer_shm.shmid, g_customer_shm.ptr, g_customer_shm.size_in_byte);
-
-        ASSERT(g_orders_file.file_size > 0);
-        ASSERT(g_orders_shm.size_in_byte == g_orders_file.file_size);
-        ASSERT(g_orders_shm.shmid >= 0);
-        ASSERT(g_orders_shm.ptr != nullptr);
-        INFO("g_orders_shm: shmid=%d, ptr=%p, size0x%lx", g_orders_shm.shmid, g_orders_shm.ptr, g_orders_shm.size_in_byte);
-
-        ASSERT(g_lineitem_file.file_size > 0);
-        ASSERT(g_lineitem_shm.size_in_byte == g_lineitem_file.file_size);
-        ASSERT(g_lineitem_shm.shmid >= 0);
-        ASSERT(g_lineitem_shm.ptr != nullptr);
-        INFO("g_lineitem_shm: shmid=%d, ptr=%p, size0x%lx", g_lineitem_shm.shmid, g_lineitem_shm.ptr, g_lineitem_shm.size_in_byte);
-        
-#else  // !ENABLE_SHM_CACHE_TXT
-        // Do nothing
-#endif  // ENABLE_SHM_CACHE_TXT
-    }
 
     // Initialize g_custkey_to_mktid, g_orderkey_to_order
     {
@@ -2962,24 +2751,6 @@ void create_index_initialize_before_fork() noexcept
 
 void create_index_initialize_after_fork() noexcept
 {
-    // Attach g_customer_shmat_ptr, g_orders_shmat_ptr, g_lineitem_shmat_ptr
-    if (g_is_preparing_page_cache) {
-#if ENABLE_SHM_CACHE_TXT
-        PANIC("TODO!");
-#else  // !ENABLE_SHM_CACHE_TXT
-        // Do nothing
-#endif // ENABLE_SHM_CACHE_TXT
-    }
-    else {
-#if ENABLE_SHM_CACHE_TXT
-        g_customer_shm.attach_fixed(false);
-        g_orders_shm.attach_fixed((g_id == 0));
-        g_lineitem_shm.attach_fixed(false);
-#else  // !ENABLE_SHM_CACHE_TXT
-        // Do nothing
-#endif // ENABLE_SHM_CACHE_TXT
-    }
-
     // Initialize g_custkey_to_mktid
     g_custkey_to_mktid.attach_fixed((g_id == 0));
 #if ENABLE_ASSERTION

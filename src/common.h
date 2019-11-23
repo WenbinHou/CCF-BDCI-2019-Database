@@ -232,12 +232,6 @@ inline uint32_t g_active_cpu_cores = 0;  // number of CPU cores
 inline uint32_t g_total_process_count = 0;  // process or thread count
 inline uint32_t g_id = 0;
 
-#if ENABLE_SHM_CACHE_TXT
-inline posix_shm_t<char> g_customer_shm { };
-inline posix_shm_t<char> g_orders_shm { };
-inline posix_shm_t<char> g_lineitem_shm { };
-#endif
-
 inline load_file_context g_customer_file { };
 inline load_file_context g_orders_file { };
 inline load_file_context g_lineitem_file { };
