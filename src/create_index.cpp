@@ -2753,11 +2753,6 @@ void fn_worker_thread_create_index(const uint32_t tid) noexcept
 }
 
 
-void fn_unloader_thread_create_index() noexcept
-{
-
-}
-
 void create_index_initialize_before_fork() noexcept
 {
     //

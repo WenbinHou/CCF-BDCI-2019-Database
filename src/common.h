@@ -287,7 +287,6 @@ inline uint32_t* g_only_minor_max_expend_start_ptr = nullptr;  // [g_shared->tot
 //==============================================================================
 void fn_loader_thread_create_index(const uint32_t tid) noexcept;
 void fn_worker_thread_create_index(const uint32_t tid) noexcept;
-void fn_unloader_thread_create_index() noexcept;
 void create_index_initialize_before_fork() noexcept;
 void create_index_initialize_after_fork() noexcept;
 
@@ -297,7 +296,6 @@ void create_index_initialize_after_fork() noexcept;
 //==============================================================================
 void fn_loader_thread_use_index(const uint32_t tid) noexcept;
 void fn_worker_thread_use_index(const uint32_t tid) noexcept;
-void fn_unloader_thread_use_index() noexcept;
 void use_index_initialize_before_fork() noexcept;
 void use_index_initialize_after_fork() noexcept;
 

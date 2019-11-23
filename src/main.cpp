@@ -296,10 +296,9 @@ static void do_multi_process() noexcept
 
 
     //
-    // Create worker thread, unloader thread
+    // Create worker thread
     //
     std::thread worker_thread;
-    std::thread unloader_thread;
     {
         worker_thread = std::thread([&]() {
 #if ENABLE_PIN_THREAD_TO_CPU
@@ -309,16 +308,6 @@ static void do_multi_process() noexcept
             set_thread_fifo_scheduler(CONFIG_SCHED_FIFO_WORKER_NICE);
 #endif
             (g_is_creating_index ? fn_worker_thread_create_index : fn_worker_thread_use_index)(g_id);
-        });
-
-        unloader_thread = std::thread([&]() {
-#if ENABLE_PIN_THREAD_TO_CPU
-            pin_thread_to_cpu_core(g_id);
-#endif
-#if ENABLE_ATTEMPT_SCHED_FIFO
-            set_thread_fifo_scheduler(CONFIG_SCHED_FIFO_UNLOADER_NICE);
-#endif
-            (g_is_creating_index ? fn_unloader_thread_create_index : fn_unloader_thread_use_index)();
         });
     }
 
@@ -339,10 +328,8 @@ static void do_multi_process() noexcept
 
     //
     // Wait for loader thread
-    // ...as well as unloader thread
     //
     worker_thread.join();
-    unloader_thread.join();
 }
 
 
