@@ -1,6 +1,16 @@
 #include "common.h"
 
 
+struct final_prepare_page_cache_context_t
+{
+    done_event map_customer_done { };
+    done_event map_orders_done { };
+    done_event map_lineitem_done { };
+
+    done_event can_exit { };
+};
+
+
 static void detect_preparing_page_cache() noexcept
 {
     ASSERT(g_orders_file.file_size > 0);
@@ -90,6 +100,145 @@ static void detect_preparing_page_cache() noexcept
 #else
         // Do nothing
 #endif
+    }
+}
+
+
+[[noreturn]]
+static void final_prepare_page_cache_customer(final_prepare_page_cache_context_t* const ctx) noexcept
+{
+    INFO("final_prepare_page_cache_customer() starts");
+
+    ASSERT(g_customer_file.fd > 0);
+    ASSERT(g_customer_file.file_size > 0);
+
+    void* const ptr = my_mmap(
+        g_customer_file.file_size,
+        PROT_READ,
+        MAP_PRIVATE | MAP_POPULATE | MAP_LOCKED,
+        g_customer_file.fd,
+        0);
+    CHECK(ptr != nullptr);
+    INFO("customer txt mapped to %p", ptr);
+
+    C_CALL(mlock(ptr, g_customer_file.file_size));
+    ctx->map_customer_done.mark_done();
+
+    INFO("done final_prepare_page_cache_customer()");
+
+    ctx->can_exit.wait_done();
+    exit(0);
+}
+
+[[noreturn]]
+static void final_prepare_page_cache_orders(final_prepare_page_cache_context_t* const ctx) noexcept
+{
+    INFO("final_prepare_page_cache_orders() starts");
+
+    ASSERT(g_orders_file.fd > 0);
+    ASSERT(g_orders_file.file_size > 0);
+
+    // Try to populate orders txt file after customer and lineitem file done
+    // So orders txt file should occupy index's page cache
+    ctx->map_customer_done.wait_done();
+    ctx->map_lineitem_done.wait_done();
+
+    void* const ptr = my_mmap(
+        g_orders_file.file_size,
+        PROT_READ,
+        MAP_SHARED | MAP_POPULATE | MAP_LOCKED,
+        g_orders_file.fd,
+        0);
+    CHECK(ptr != nullptr);
+    INFO("orders txt mapped to %p", ptr);
+
+    C_CALL(mlock(ptr, g_orders_file.file_size));
+    ctx->map_orders_done.mark_done();
+
+    INFO("done final_prepare_page_cache_orders()");
+
+    ctx->can_exit.wait_done();
+    exit(0);
+}
+
+[[noreturn]]
+static void final_prepare_page_cache_lineitem(final_prepare_page_cache_context_t* const ctx) noexcept
+{
+    INFO("final_prepare_page_cache_lineitem() starts");
+
+    ASSERT(g_lineitem_file.fd > 0);
+    ASSERT(g_lineitem_file.file_size > 0);
+
+    void* const ptr = my_mmap(
+        g_lineitem_file.file_size,
+        PROT_READ,
+        MAP_SHARED | MAP_POPULATE | MAP_LOCKED,
+        g_lineitem_file.fd,
+        0);
+    CHECK(ptr != nullptr);
+    INFO("lineitem txt mapped to %p", ptr);
+
+    C_CALL(mlock(ptr, g_lineitem_file.file_size));
+    ctx->map_lineitem_done.mark_done();
+
+    INFO("done final_prepare_page_cache_lineitem()");
+
+    ctx->can_exit.wait_done();
+    exit(0);
+}
+
+
+
+static void final_prepare_page_cache() noexcept
+{
+    ASSERT(g_index_directory_fd > 0);
+    ASSERT(g_customer_file.file_size > 0);
+    ASSERT(g_customer_file.fd > 0);
+    ASSERT(g_orders_file.file_size > 0);
+    ASSERT(g_orders_file.fd > 0);
+    ASSERT(g_lineitem_file.file_size > 0);
+    ASSERT(g_lineitem_file.fd > 0);
+
+    final_prepare_page_cache_context_t* const ctx = (final_prepare_page_cache_context_t*)mmap_allocate_page4k_shared(
+        sizeof(final_prepare_page_cache_context_t));
+    ASSERT(ctx != nullptr);
+    new (ctx) final_prepare_page_cache_context_t;
+
+    //
+    // Fork 3 child process to load customer, orders, lineitem file
+    //
+    if (fork() == 0) {  // child 1
+        final_prepare_page_cache_customer(ctx);
+    }
+    else if (fork() == 0) {  // child 2
+        final_prepare_page_cache_orders(ctx);
+    }
+    else if (fork() == 0) {  // child 3
+        final_prepare_page_cache_lineitem(ctx);
+    }
+    else {  // parent process
+        ctx->map_customer_done.wait_done();
+        ctx->map_orders_done.wait_done();
+        ctx->map_lineitem_done.wait_done();
+
+        // Now clear all other page caches!
+        INFO("final_prepare_page_cache: now mem_drop_cache()");
+        const bool success = mem_drop_cache();
+        if (!success) {
+            WARN("final_prepare_page_cache: mem_drop_cache() failed! Performance may drop significantly");
+        }
+
+        // Now we allows exit...
+        INFO("final_prepare_page_cache: now can_exit");
+        ctx->can_exit.mark_done();
+
+        for (uint32_t i = 0; i < 3; ++i) {
+            int status;
+            C_CALL(wait(&status));
+            CHECK(WIFEXITED(status), "final_prepare_page_cache: One of child process not normally exits");
+            CHECK(WEXITSTATUS(status) == 0, "final_prepare_page_cache: One of child process exits with %d", WEXITSTATUS(status));
+        }
+        INFO("final_prepare_page_cache: 3 child processes exits normally");
     }
 }
 
@@ -265,6 +414,22 @@ int main(int argc, char* argv[])
                 INFO("use_index: g_is_preparing_page_cache is true!");
             }
         }
+
+        if (g_is_preparing_page_cache) {
+            const char* const customer_text_path = argv[1];
+            const char* const orders_text_path = argv[2];
+            const char* const lineitem_text_path = argv[3];
+
+#if ENABLE_SHM_CACHE_TXT
+            __open_file_read_direct(customer_text_path, &g_customer_file);
+            __open_file_read_direct(orders_text_path, &g_orders_file);
+            __open_file_read_direct(lineitem_text_path, &g_lineitem_file);
+#else
+            __open_file_read(customer_text_path, &g_customer_file);
+            __open_file_read(orders_text_path, &g_orders_file);
+            __open_file_read(lineitem_text_path, &g_lineitem_file);
+#endif
+        }
     }
 
 
@@ -287,8 +452,8 @@ int main(int argc, char* argv[])
         g_query_count = __parse_u32<'\0'>(argv[4]);
         DEBUG("g_query_count: %u", g_query_count);
         g_argv_queries = &argv[5];
-        if (!g_is_creating_index && __unlikely(g_query_count == 0)) {
-            INFO("!is_creating_index && g_query_count == 0: fast exit!");
+        if (!g_is_creating_index && __unlikely(g_query_count == 0) && !g_is_preparing_page_cache) {
+            INFO("!is_creating_index && g_query_count == 0 && !g_is_preparing_page_cache: fast exit!");
             return 0;
         }
 
@@ -307,10 +472,17 @@ int main(int argc, char* argv[])
     }
 
 
-    do_multi_process();
-    if (g_id != (uint32_t)-1) {
-        INFO("[%u] child process exits", g_id);
-        return 0;
+    if (g_is_creating_index || g_query_count > 0) {
+        do_multi_process();
+        if (g_id != (uint32_t)-1) {
+            INFO("[%u] child process exits", g_id);
+            return 0;
+        }
+    }
+    else {
+        ASSERT(!g_is_creating_index);  // currently use_index
+        ASSERT(g_query_count == 0);
+        ASSERT(g_is_preparing_page_cache);  // we must be preparing page cache
     }
 
 
@@ -332,7 +504,8 @@ int main(int argc, char* argv[])
     }
     else {
         if (g_is_preparing_page_cache) {
-            INFO("TODO: prepare page cache!");  // TODO
+            INFO("now prepare page cache!");
+            final_prepare_page_cache();
         }
 
         INFO("================ now exit! ================");
