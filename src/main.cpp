@@ -22,54 +22,70 @@ static void detect_preparing_page_cache() noexcept
     const uint32_t nr_2mb = mem_get_nr_hugepages_2048kB();
     DEBUG("nr_hugepages (2048kB): %u", nr_2mb);
 
-    const uint32_t require_nr_2mb = CONFIG_EXTRA_HUGE_PAGES;
-    DEBUG("require_nr_2mb: %u", require_nr_2mb);
+    if (nr_2mb != CONFIG_EXTRA_HUGE_PAGES) {
+        // Try to allocate CONFIG_EXTRA_HUGE_PAGES huge pages
+        bool success = mem_set_nr_hugepages_2048kB(CONFIG_EXTRA_HUGE_PAGES);
+        CHECK(success, "Can't write to /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages");
 
-    if (nr_2mb == require_nr_2mb) {
-        do {
-            // Test are txt files in page cache?
-            const auto is_file_in_page_cache = [](const load_file_context& ctx) {
-                ASSERT(ctx.fd > 0);
-                ASSERT(ctx.file_size > 0);
+        uint32_t real_nr_2mb = mem_get_nr_hugepages_2048kB();
+        if (real_nr_2mb != CONFIG_EXTRA_HUGE_PAGES) {
+            ASSERT(real_nr_2mb < CONFIG_EXTRA_HUGE_PAGES);
+            INFO("required %u huge pages, but actually allocated %u: drop page caches and try again",
+                 CONFIG_EXTRA_HUGE_PAGES, real_nr_2mb);
+            success = mem_drop_cache();
+            CHECK(success, "Can't drop page caches");
 
-                constexpr const uint64_t CHECK_SIZE = 1048576;
-                void* const ptr = mmap_reserve_space(CHECK_SIZE);
+            success = mem_set_nr_hugepages_2048kB(CONFIG_EXTRA_HUGE_PAGES);
+            CHECK(success, "Can't write to /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages");
 
-                bool result = false;
-                do {
-                    if (!__fincore(ptr, ctx.fd, 0, CHECK_SIZE)) {
-                        break;
-                    }
-                    if (!__fincore(ptr, ctx.fd, __align_down(ctx.file_size / 2, PAGE_SIZE), CHECK_SIZE)) {
-                        break;
-                    }
-                    if (!__fincore(ptr, ctx.fd, __align_down(ctx.file_size - CHECK_SIZE, PAGE_SIZE), CHECK_SIZE)) {
-                        break;
-                    }
-                    result = true;
-                } while(false);
-
-                C_CALL(munmap(ptr, CHECK_SIZE));
-                mmap_return_space(ptr, ctx.file_size);
-
-                return result;
-            };
-
-            if (!is_file_in_page_cache(g_customer_file)) break;
-            INFO("is_file_in_page_cache(g_customer_file): true");
-
-            if (!is_file_in_page_cache(g_orders_file)) break;
-            INFO("is_file_in_page_cache(g_orders_file): true");
-
-            if (!is_file_in_page_cache(g_lineitem_file)) break;
-            INFO("is_file_in_page_cache(g_lineitem_file): true");
-
-            g_is_preparing_page_cache = false;
-        } while(false);
+            real_nr_2mb = mem_get_nr_hugepages_2048kB();
+            CHECK(real_nr_2mb == CONFIG_EXTRA_HUGE_PAGES,
+                "Still can't allocate enough huge pages: required %u huge pages, but actually allocated %u",
+                CONFIG_EXTRA_HUGE_PAGES, real_nr_2mb);
+        }
     }
-    else {
-        DEBUG("nr_hugepages != require_nr_2mb (%u != %u)", nr_2mb, require_nr_2mb);
-    }
+
+    do {
+        // Test are txt files in page cache?
+        const auto is_file_in_page_cache = [](const load_file_context& ctx) {
+            ASSERT(ctx.fd > 0);
+            ASSERT(ctx.file_size > 0);
+
+            constexpr const uint64_t CHECK_SIZE = 1048576;
+            void* const ptr = mmap_reserve_space(CHECK_SIZE);
+
+            bool result = false;
+            do {
+                if (!__fincore(ptr, ctx.fd, 0, CHECK_SIZE)) {
+                    break;
+                }
+                if (!__fincore(ptr, ctx.fd, __align_down(ctx.file_size / 2, PAGE_SIZE), CHECK_SIZE)) {
+                    break;
+                }
+                if (!__fincore(ptr, ctx.fd, __align_down(ctx.file_size - CHECK_SIZE, PAGE_SIZE), CHECK_SIZE)) {
+                    break;
+                }
+                result = true;
+            } while(false);
+
+            C_CALL(munmap(ptr, CHECK_SIZE));
+            mmap_return_space(ptr, ctx.file_size);
+
+            return result;
+        };
+
+        if (!is_file_in_page_cache(g_customer_file)) break;
+        INFO("is_file_in_page_cache(g_customer_file): true");
+
+        if (!is_file_in_page_cache(g_orders_file)) break;
+        INFO("is_file_in_page_cache(g_orders_file): true");
+
+        if (!is_file_in_page_cache(g_lineitem_file)) break;
+        INFO("is_file_in_page_cache(g_lineitem_file): true");
+
+        g_is_preparing_page_cache = false;
+
+    } while(false);
 
     INFO("g_is_preparing_page_cache: %d", (int)g_is_preparing_page_cache);
 }
