@@ -651,6 +651,12 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
     //
     // Unmap mapped orders texts to allow for clearing page cache
     //
+    // NOTE:
+    //  We MUST NOT do this in worker threads!
+    //  This is a bug! Worker threads here may unmap the "part" which has been mapped to lineitem by loader threads
+    //  Then this causes segfault when worker threads later access those unmapped "part"s
+    //
+    /*
     g_txt_mapping_bag.unsafe_for_each([&](index32_t& part_index) {
         ASSERT(part_index < CONFIG_LOAD_TXT_BUFFER_COUNT);
         mapped_file_part_overlapped_t& part = g_txt_mapping_buffers[part_index];
@@ -660,6 +666,7 @@ static void worker_load_orders_multi_part([[maybe_unused]] const uint32_t tid) n
             INFO("[%u] unmap orders for part_index=%u", tid, part_index);
         }
     });
+    */
 
     INFO("[%u] done worker_load_orders_multi_part()", tid);
 }
@@ -1112,6 +1119,9 @@ void worker_load_lineitem_multi_part(const uint32_t tid) noexcept
                 g_buckets_endoffset_minor[bucket_id] = (uint64_t)CONFIG_INDEX_SPARSE_BUCKET_SIZE_MINOR * (bucket_id - begin_bucket_id);
             }
         }
+
+        // This is necessary
+        g_shared->worker_sync_barrier.sync();
     }
 
 

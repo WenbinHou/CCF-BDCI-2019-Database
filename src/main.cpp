@@ -254,6 +254,18 @@ int main(int argc, char* argv[])
 
         detect_preparing_page_cache();
     }
+    else {
+        g_is_preparing_page_cache = false;
+
+        // Detect whether we are preparing page cache by check the environment variable
+        const char* const env_value = getenv(ENV_NAME_PREPARING_PAGE_CACHE);
+        if (env_value != nullptr) {
+            if (strcmp(env_value, ENV_VALUE_PREPARING_PAGE_CACHE) == 0) {
+                g_is_preparing_page_cache = true;
+                INFO("use_index: g_is_preparing_page_cache is true!");
+            }
+        }
+    }
 
 
     //
@@ -296,7 +308,35 @@ int main(int argc, char* argv[])
 
 
     do_multi_process();
+    if (g_id != (uint32_t)-1) {
+        INFO("[%u] child process exits", g_id);
+        return 0;
+    }
 
-    INFO("======== exit ========");
+
+    //
+    // Exit main process now
+    //
+    if (g_is_creating_index) {
+        if (g_is_preparing_page_cache) {
+            C_CALL(setenv(ENV_NAME_PREPARING_PAGE_CACHE, ENV_VALUE_PREPARING_PAGE_CACHE, true));
+        }
+
+        char** args = new char*[argc + 1];
+        for (int i = 0; i < argc; ++i) {
+            args[i] = argv[i];
+        }
+        args[argc] = nullptr;
+        INFO("================ now exec! ================");
+        C_CALL(execv(argv[0], args));
+    }
+    else {
+        if (g_is_preparing_page_cache) {
+            INFO("TODO: prepare page cache!");  // TODO
+        }
+
+        INFO("================ now exit! ================");
+    }
+
     return 0;
 }

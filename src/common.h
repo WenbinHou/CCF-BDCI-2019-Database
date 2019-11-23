@@ -161,6 +161,9 @@ static_assert(sizeof(query_result_t) == 12);
 #define SHMKEY_QUERY_CONTEXT        ((key_t)0x19491007)
 #define SHMKEY_ITEMS_BUFFER         ((key_t)0x19491008)
 
+#define ENV_NAME_PREPARING_PAGE_CACHE   "PREPARING_PAGE_CACHE_174066BA074C446BAA8A0350D5120BCE"
+#define ENV_VALUE_PREPARING_PAGE_CACHE  "YES_0858B4395F6E46DCB802123E4A865CB8"
+
 
 //==============================================================================
 // Global Variables
