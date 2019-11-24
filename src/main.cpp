@@ -346,6 +346,7 @@ int main(int argc, char* argv[])
         else if (errno == ENOENT) {
             g_is_creating_index = true;
             DEBUG("index directory not found... now creating index");
+            umask(0);  // always succeeds
             C_CALL(mkdir(index_dir, 0777));  // so we don't require sudo to `rm -rf index`
             g_index_directory_fd = C_CALL(open(index_dir, O_DIRECTORY | O_PATH | O_CLOEXEC));
         }
