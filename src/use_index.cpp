@@ -304,9 +304,7 @@ void scan_minor_index_nocheck_orderdate_maybe_check_shipdate(
                     ASSERT(result_length > 0); \
                     ASSERT(result_length == q_topn); \
                     if (tmp > results[0]) { \
-                        std::pop_heap(results, results + result_length, std::greater<>()); \
-                        results[result_length-1] = tmp; \
-                        std::push_heap(results, results + result_length, std::greater<>()); \
+                        modify_heap(results, result_length, tmp, std::greater<>()); \
                         /* curr_min_expend_cent hopefully improves performance */ \
                         curr_min_expend_cent = _mm256_set1_epi32(results[0].total_expend_cent); \
                     } \
@@ -409,9 +407,7 @@ void scan_minor_index_check_orderdate_maybe_check_shipdate(
                 ASSERT(result_length > 0);
                 ASSERT(result_length == q_topn);
                 if (__unlikely(tmp > results[0])) {
-                    std::pop_heap(results, results + result_length, std::greater<>());
-                    results[result_length-1] = tmp;
-                    std::push_heap(results, results + result_length, std::greater<>());
+                    modify_heap(results, result_length, tmp, std::greater<>());
                 }
             }
         }
@@ -563,9 +559,7 @@ void scan_major_index_nocheck_orderdate_maybe_check_shipdate(
                     ASSERT(result_length > 0); \
                     ASSERT(result_length == q_topn); \
                     if (tmp > results[0]) { \
-                        std::pop_heap(results, results + result_length, std::greater<>()); \
-                        results[result_length-1] = tmp; \
-                        std::push_heap(results, results + result_length, std::greater<>()); \
+                        modify_heap(results, result_length, tmp, std::greater<>()); \
                     } \
                 } \
             }
@@ -667,9 +661,7 @@ void scan_major_index_check_orderdate_maybe_check_shipdate(
                 ASSERT(result_length > 0);
                 ASSERT(result_length == q_topn);
                 if (tmp > results[0]) {
-                    std::pop_heap(results, results + result_length, std::greater<>());
-                    results[result_length-1] = tmp;
-                    std::push_heap(results, results + result_length, std::greater<>());
+                    modify_heap(results, result_length, tmp, std::greater<>());
                 }
             }
         }
@@ -847,9 +839,7 @@ void scan_mid_index_nocheck_orderdate_maybe_check_shipdate(
                     ASSERT(result_length > 0); \
                     ASSERT(result_length == q_topn); \
                     if (tmp > results[0]) { \
-                        std::pop_heap(results, results + result_length, std::greater<>()); \
-                        results[result_length-1] = tmp; \
-                        std::push_heap(results, results + result_length, std::greater<>()); \
+                        modify_heap(results, result_length, tmp, std::greater<>()); \
                         curr_min_expend_cent = results[0].total_expend_cent; \
                     } \
                 } \
@@ -965,9 +955,7 @@ void scan_mid_index_check_orderdate_maybe_check_shipdate(
                 ASSERT(result_length > 0);
                 ASSERT(result_length == q_topn);
                 if (tmp > results[0]) {
-                    std::pop_heap(results, results + result_length, std::greater<>());
-                    results[result_length-1] = tmp;
-                    std::push_heap(results, results + result_length, std::greater<>());
+                    modify_heap(results, result_length, tmp, std::greater<>());
                     curr_min_expend_cent = results[0].total_expend_cent;
                 }
             }
@@ -1332,9 +1320,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
                         ASSERT(ctx->results_length > 0);
                         ASSERT(ctx->results_length == ctx->q_topn);
                         if (tmp > ctx->results[0]) {
-                            std::pop_heap(ctx->results, ctx->results + ctx->results_length, std::greater<>());
-                            ctx->results[ctx->results_length-1] = tmp;
-                            std::push_heap(ctx->results, ctx->results + ctx->results_length, std::greater<>());
+                            modify_heap(ctx->results, ctx->results_length, tmp, std::greater<>());
                         }
                         else {
                             break;

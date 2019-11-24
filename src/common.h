@@ -392,4 +392,43 @@ uint32_t __parse_u32(const char* s) noexcept
     return result;
 }
 
+template<typename T, typename TComp>
+__always_inline
+void modify_heap(T* const begin, const size_t count, const T& new_value, TComp comp) noexcept
+{
+    ASSERT(count > 0);
+    begin[0] = new_value;
+
+    T* const base = begin - 1;
+    size_t pos = 1;
+    while ((pos << 1 | 1) <= count) {
+        if (comp(base[pos << 1], base[pos << 1 | 1])) {  // check to swap with right child
+            if (comp(base[pos], base[pos << 1 | 1])) {
+                std::swap(base[pos], base[pos << 1 | 1]);
+                pos = pos << 1 | 1;
+            }
+            else {
+                return;
+            }
+        }
+        else {  // check to swap with left child
+            if (comp(base[pos], base[pos << 1])) {
+                std::swap(base[pos], base[pos << 1]);
+                pos = pos << 1;
+            }
+            else {
+                return;
+            }
+        }
+    }
+
+    // Now (pos << 1 | 1) > count
+    if ((pos << 1) <= count) {
+        if (comp(base[pos], base[pos << 1])) {
+            std::swap(base[pos], base[pos << 1]);
+        }
+    }
+}
+
+
 #endif  // !defined(_BDCI19_COMMON_H_INCLUDED_)

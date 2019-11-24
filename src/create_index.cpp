@@ -1774,9 +1774,7 @@ static void worker_compute_pretopn_for_plate_major(
                     const uint64_t value = (uint64_t)(total_expend_cent##N) << 36 | (uint64_t)(orderkey##N) << 6 | (plate_orderdate_diff##N); \
                     \
                     if (value > topn_ptr[0]) { \
-                        std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
-                        topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value; \
-                        std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                        modify_heap(topn_ptr, CONFIG_EXPECT_MAX_TOPN, value, std::greater<>()); \
                     } \
                 } \
             } \
@@ -1847,9 +1845,7 @@ static void worker_compute_pretopn_for_plate_major(
             }
             else {
                 if (value > topn_ptr[0]) {
-                    std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
-                    topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value;
-                    std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                    modify_heap(topn_ptr, CONFIG_EXPECT_MAX_TOPN, value, std::greater<>());
                 }
             }
         }
@@ -1938,9 +1934,7 @@ static void worker_compute_pretopn_for_plate_mid(
         else {
             if (__likely(value > topn_ptr[0])) {
                 //INFO("Wow!!!!!! mid bucket gets into pretopn!");
-                std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
-                topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value;
-                std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+                modify_heap(topn_ptr, CONFIG_EXPECT_MAX_TOPN, value, std::greater<>());
                 curr_min_expend_cent = (uint32_t)(topn_ptr[0] >> 36);
             }
         }
@@ -1992,9 +1986,7 @@ static void worker_compute_pretopn_for_plate_minor(
 //            }
 //            else {
 //                if (value > topn_ptr[0]) {
-//                    std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
-//                    topn_ptr[CONFIG_EXPECT_MAX_TOPN-1] = value;
-//                    std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>());
+//                    modify_heap(topn_ptr, CONFIG_EXPECT_MAX_TOPN, value, std::greater<>());
 //                }
 //            }
 //        }
@@ -2098,9 +2090,7 @@ static void worker_compute_pretopn_for_plate_minor(
                 ASSERT(topn_count == CONFIG_EXPECT_MAX_TOPN); \
                 ASSERT(value > topn_ptr[0]); \
                 \
-                std::pop_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
-                topn_ptr[CONFIG_EXPECT_MAX_TOPN - 1] = value; \
-                std::push_heap(topn_ptr, topn_ptr + CONFIG_EXPECT_MAX_TOPN, std::greater<>()); \
+                modify_heap(topn_ptr, CONFIG_EXPECT_MAX_TOPN, value, std::greater<>()); \
                 \
                 /* curr_min_expend_cent hopefully improves performance */ \
                 curr_min_expend_cent_i32 = (uint32_t)(topn_ptr[0] >> 36); \
