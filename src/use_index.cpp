@@ -173,6 +173,113 @@ void prepare_query_context_space() noexcept
 }
 
 
+void scan_pretopn_heap(
+    /*in*/ const uint32_t from_plate_id,
+    /*in*/ const uint32_t to_plate_id,
+    /*inout*/ query_result_t* const results,
+    /*inout*/ uint32_t& result_length,
+    /*in*/ const uint32_t q_topn) noexcept
+{
+    ASSERT(to_plate_id >= from_plate_id);
+    ASSERT(result_length == 0);
+
+    struct plate_head_t {
+        uint64_t pretopn_value;
+        uint64_t* plate_pos_curr;
+        uint64_t* plate_pos_end;
+        date_t plate_base_orderdate;
+
+        constexpr bool operator <(const plate_head_t& other) noexcept { return pretopn_value < other.pretopn_value; }
+    };
+
+    uint32_t plate_head_count = (to_plate_id - from_plate_id + 1);
+    plate_head_t plate_heads[plate_head_count];
+    for (uint32_t plate_id = from_plate_id; plate_id <= to_plate_id; ++plate_id) {
+        plate_head_t& head = plate_heads[plate_id - from_plate_id];
+        head.plate_pos_curr = g_pretopn_start_ptr + (uint64_t)plate_id * CONFIG_EXPECT_MAX_TOPN;
+        head.plate_pos_end = head.plate_pos_curr + g_pretopn_count_start_ptr[plate_id];
+        head.pretopn_value = *head.plate_pos_curr;
+        head.plate_base_orderdate = calc_plate_base_orderdate_by_plate_id(plate_id);
+    }
+    std::make_heap(plate_heads, plate_heads + plate_head_count, std::less<>());
+
+    result_length = 0;
+    query_result_t* curr_result = &results[q_topn - 1];
+    while (result_length < q_topn) {
+        const uint64_t value = plate_heads[0].pretopn_value;
+
+        curr_result->orderdate = plate_heads[0].plate_base_orderdate + (uint32_t)(value & 0b111111);
+        curr_result->orderkey = (uint32_t)((value >> 6) & ((1U << 30) - 1));
+        curr_result->total_expend_cent = (uint32_t)(value >> 36);
+        --curr_result;
+        ++result_length;
+
+        ++plate_heads[0].plate_pos_curr;
+        if (__unlikely(plate_heads[0].plate_pos_curr == plate_heads[0].plate_pos_end)) {
+            // plate_heads[0] comes to its end
+            std::pop_heap(plate_heads, plate_heads + plate_head_count);  // remove plate_heads[0]
+            --plate_head_count;
+            if (__unlikely(plate_head_count == 0)) break;
+        }
+        else {
+            plate_heads[0].pretopn_value = *plate_heads[0].plate_pos_curr;
+            modify_heap(plate_heads, plate_head_count, std::less<>());
+        }
+    }
+
+    // Move to the head if not fulfilled
+    ASSERT(result_length <= q_topn);
+    if (__unlikely(result_length < q_topn)) {
+        memmove(results, results + q_topn - result_length, sizeof(query_result_t) * result_length);
+    }
+}
+
+
+void scan_pretopn_sequential(
+    /*in*/ const uint32_t from_plate_id,
+    /*in*/ const uint32_t to_plate_id,
+    /*inout*/ query_result_t* const results,
+    /*inout*/ uint32_t& result_length,
+    /*in*/ const uint32_t q_topn) noexcept
+{
+    for (uint32_t plate_id = from_plate_id; plate_id <= to_plate_id; ++plate_id) {
+        const uint32_t topn_count = g_pretopn_count_start_ptr[plate_id];
+        ASSERT(topn_count <= CONFIG_EXPECT_MAX_TOPN);
+        const uint64_t* const topn_ptr = g_pretopn_start_ptr + (uint64_t)plate_id * CONFIG_EXPECT_MAX_TOPN;
+        const date_t plate_base_orderdate = calc_plate_base_orderdate_by_plate_id(plate_id);
+
+        for (uint32_t i = 0; i < topn_count; ++i) {
+            const uint64_t value = topn_ptr[i];
+            const uint32_t total_expend_cent = (uint32_t)(value >> 36);
+            const uint32_t orderkey = (uint32_t)((value >> 6) & ((1U << 30) - 1));
+            const uint32_t orderdate_diff = (uint32_t)(value & 0b111111);
+            ASSERT(total_expend_cent > 0);
+
+            query_result_t tmp;
+            tmp.orderdate = plate_base_orderdate + orderdate_diff;
+            tmp.orderkey = orderkey;
+            tmp.total_expend_cent = total_expend_cent;
+
+            if (result_length < q_topn) {
+                results[result_length++] = tmp;
+                if (__unlikely(result_length == q_topn)) {
+                    std::make_heap(results, results + result_length, std::greater<>());
+                }
+            }
+            else {
+                ASSERT(result_length > 0);
+                ASSERT(result_length == q_topn);
+                if (tmp > results[0]) {
+                    modify_heap(results, result_length, tmp, std::greater<>());
+                }
+                else {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 
 
 template<bool _CheckShipdateDiff>
@@ -1296,41 +1403,13 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             ASSERT(calc_plate_base_bucket_id_by_plate_id(from_plate_id) == ctx->pretopn_begin_bucket_id);
 #endif
 
-            for (uint32_t plate_id = from_plate_id; plate_id <= to_plate_id; ++plate_id) {
-                const uint32_t topn_count = g_pretopn_count_start_ptr[plate_id];
-                ASSERT(topn_count <= CONFIG_EXPECT_MAX_TOPN);
-                const uint64_t* const topn_ptr = g_pretopn_start_ptr + (uint64_t)plate_id * CONFIG_EXPECT_MAX_TOPN;
-                const date_t plate_base_orderdate = calc_plate_base_orderdate_by_plate_id(plate_id);
-
-                for (uint32_t i = 0; i < topn_count; ++i) {
-                    const uint64_t value = topn_ptr[i];
-                    const uint32_t total_expend_cent = (uint32_t)(value >> 36);
-                    const uint32_t orderkey = (uint32_t)((value >> 6) & ((1U << 30) - 1));
-                    const uint32_t orderdate_diff = (uint32_t)(value & 0b111111);
-                    ASSERT(total_expend_cent > 0);
-
-                    query_result_t tmp;
-                    tmp.orderdate = plate_base_orderdate + orderdate_diff;
-                    tmp.orderkey = orderkey;
-                    tmp.total_expend_cent = total_expend_cent;
-
-                    if (ctx->results_length < ctx->q_topn) {
-                        ctx->results[ctx->results_length++] = tmp;
-                        if (__unlikely(ctx->results_length == ctx->q_topn)) {
-                            std::make_heap(ctx->results, ctx->results + ctx->results_length, std::greater<>());
-                        }
-                    }
-                    else {
-                        ASSERT(ctx->results_length > 0);
-                        ASSERT(ctx->results_length == ctx->q_topn);
-                        if (tmp > ctx->results[0]) {
-                            modify_heap(ctx->results, ctx->results_length, tmp, std::greater<>());
-                        }
-                        else {
-                            break;
-                        }
-                    }
-                }
+            // For smaller q_topn values, we prefer sequential scanning
+            // For larger ones, we prefer heap scanning
+            if (ctx->q_topn <= CONFIG_PRETOPN_SEQUENTIAL_SCAN_MAX) {
+                scan_pretopn_sequential(from_plate_id, to_plate_id, ctx->results, ctx->results_length, ctx->q_topn);
+            }
+            else {
+                scan_pretopn_heap(from_plate_id, to_plate_id, ctx->results, ctx->results_length, ctx->q_topn);
             }
         }
 

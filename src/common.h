@@ -403,13 +403,11 @@ uint32_t __parse_u32(const char* s) noexcept
     return result;
 }
 
+
 template<typename T, typename TComp>
 __always_inline
-void modify_heap(T* const begin, const size_t count, const T& new_value, TComp comp) noexcept
+void modify_heap(T* const begin, const size_t count, TComp comp) noexcept
 {
-    ASSERT(count > 0);
-    begin[0] = new_value;
-
     T* const base = begin - 1;
     size_t pos = 1;
     while ((pos << 1 | 1) <= count) {
@@ -439,6 +437,16 @@ void modify_heap(T* const begin, const size_t count, const T& new_value, TComp c
             std::swap(base[pos], base[pos << 1]);
         }
     }
+}
+
+template<typename T, typename TComp>
+__always_inline
+void modify_heap(T* const begin, const size_t count, const T& new_value, TComp comp) noexcept
+{
+    ASSERT(count > 0);
+    begin[0] = new_value;
+
+    modify_heap(begin, count, comp);
 }
 
 
