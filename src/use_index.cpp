@@ -1222,6 +1222,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
     //
     if (tid == 0) {
         g_output_write_thread = std::thread([]() {
+            pin_thread_to_all_cpu_cores();
 
             for (uint32_t query_id = 0; query_id < g_query_count; ++query_id) {
                 query_context_t* const ctx = g_query_contexts[query_id];
@@ -1278,6 +1279,9 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 1: pretopn
         //
+        DEBUG("doing query #%u: step 1 - pretopn: bucket [%d, %d)", query_id,
+            ctx->pretopn_begin_bucket_id,
+            ctx->nocheck_tail_begin_bucket_id);
         ASSERT(g_pretopn_start_ptr != nullptr);
         ASSERT(g_pretopn_count_start_ptr != nullptr);
         if (ctx->nocheck_tail_begin_bucket_id > ctx->pretopn_begin_bucket_id) {
@@ -1334,6 +1338,9 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 2: major buckets, nocheck_orderdate_check_shipdate
         //
+        DEBUG("doing query #%u: step 2 [%u,%u)", query_id,
+              ctx->check_orderdate_check_shipdate_begin_bucket_id,
+              ctx->nocheck_head_begin_bucket_id);
         for (uint32_t bucket_id = ctx->check_orderdate_check_shipdate_begin_bucket_id;
             bucket_id < ctx->nocheck_head_begin_bucket_id;
             ++bucket_id) {
@@ -1370,6 +1377,9 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 3: major buckets, nocheck_orderdate_nocheck_shipdate
         //
+        DEBUG("doing query #%u: step 3 [%u,%u)", query_id,
+              ctx->nocheck_head_begin_bucket_id,
+              ctx->pretopn_begin_bucket_id);
         for (uint32_t bucket_id = ctx->nocheck_head_begin_bucket_id;
             bucket_id < ctx->pretopn_begin_bucket_id;
             ++bucket_id) {
@@ -1408,6 +1418,9 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 4: major buckets, nocheck_orderdate_nocheck_shipdate
         //
+        DEBUG("doing query #%u: step 4 [%u,%u)", query_id,
+            ctx->nocheck_tail_begin_bucket_id,
+            ctx->only_check_orderdate_begin_bucket_id);
         for (uint32_t bucket_id = ctx->nocheck_tail_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_begin_bucket_id;
             ++bucket_id) {
@@ -1446,6 +1459,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 5: major buckets, check_orderdate_maybe_check_shipdate
         //
+        DEBUG("doing query #%u: step 5", query_id);
         for (uint32_t bucket_id = ctx->only_check_orderdate_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_end_bucket_id;
             ++bucket_id) {
@@ -1498,6 +1512,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 6: mid buckets, nocheck_orderdate_check_shipdate
         //
+        DEBUG("doing query #%u: step 6", query_id);
         for (uint32_t bucket_id = ctx->check_orderdate_check_shipdate_begin_bucket_id;
             bucket_id < ctx->nocheck_head_begin_bucket_id;
             ++bucket_id) {
@@ -1544,6 +1559,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 7: mid buckets, nocheck_orderdate_nocheck_shipdate
         //
+        DEBUG("doing query #%u: step 7", query_id);
         for (uint32_t bucket_id = ctx->nocheck_head_begin_bucket_id;
             bucket_id < ctx->pretopn_begin_bucket_id;
             ++bucket_id) {
@@ -1592,6 +1608,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 8: mid buckets, nocheck_orderdate_nocheck_shipdate
         //
+        DEBUG("doing query #%u: step 8", query_id);
         for (uint32_t bucket_id = ctx->nocheck_tail_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_begin_bucket_id;
             ++bucket_id) {
@@ -1640,6 +1657,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 9: mid buckets, check_orderdate_maybe_check_shipdate
         //
+        DEBUG("doing query #%u: step 9", query_id);
         for (uint32_t bucket_id = ctx->only_check_orderdate_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_end_bucket_id;
             ++bucket_id) {
@@ -1702,6 +1720,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 10: minor buckets, nocheck_orderdate_check_shipdate
         //
+        DEBUG("doing query #%u: step 10", query_id);
         for (uint32_t bucket_id = ctx->check_orderdate_check_shipdate_begin_bucket_id;
             bucket_id < ctx->nocheck_head_begin_bucket_id;
             ++bucket_id) {
@@ -1748,6 +1767,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 11: minor buckets, nocheck_orderdate_nocheck_shipdate
         //
+        DEBUG("doing query #%u: step 11", query_id);
         for (uint32_t bucket_id = ctx->nocheck_head_begin_bucket_id;
             bucket_id < ctx->pretopn_begin_bucket_id;
             ++bucket_id) {
@@ -1796,6 +1816,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 12: minor buckets, nocheck_orderdate_nocheck_shipdate
         //
+        DEBUG("doing query #%u: step 12", query_id);
         for (uint32_t bucket_id = ctx->nocheck_tail_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_begin_bucket_id;
             ++bucket_id) {
@@ -1844,6 +1865,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
         //
         // Step 13: minor buckets, check_orderdate_maybe_check_shipdate
         //
+        DEBUG("doing query #%u: step 13", query_id);
         for (uint32_t bucket_id = ctx->only_check_orderdate_begin_bucket_id;
             bucket_id < ctx->only_check_orderdate_end_bucket_id;
             ++bucket_id) {
@@ -1903,12 +1925,15 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
 
 
         //
-        // Print this query
+        // Sort this query and generate output
         //
+        DEBUG("doing query #%u: step 14: sort", query_id);
         std::sort(ctx->results, ctx->results + ctx->results_length, std::greater<>());
 
+        DEBUG("doing query #%u: step 15: generate_query_output", query_id);
         generate_query_output(*ctx);
 
+        DEBUG("doing query #%u: done", query_id);
         ctx->done.mark_done();
     }
 

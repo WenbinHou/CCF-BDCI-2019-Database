@@ -360,6 +360,17 @@ void pin_thread_to_cpu_core(const uint32_t core) noexcept
 }
 
 __always_inline
+void pin_thread_to_all_cpu_cores() noexcept
+{
+    cpu_set_t cpu_set;
+    CPU_ZERO(&cpu_set);
+    for (uint32_t i = 0; i < g_active_cpu_cores; ++i) {
+        CPU_SET(i, &cpu_set);
+    }
+    PTHREAD_CALL_NO_PANIC(pthread_setaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set));
+}
+
+__always_inline
 void set_thread_fifo_scheduler(const uint32_t nice_from_max_priority) noexcept
 {
     static const uint32_t __max_priority = C_CALL(sched_get_priority_max(SCHED_FIFO));
