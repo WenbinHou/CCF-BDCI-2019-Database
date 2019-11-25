@@ -160,8 +160,33 @@ void prepare_query_context_space() noexcept
         curr_size = __align_up(curr_size, 64);  // align to CPU cache line
     }
 
-    const bool success = g_query_context_shm.init_fixed(SHMKEY_QUERY_CONTEXT, curr_size, true);
-    CHECK(success);
+    constexpr const uint64_t HUGETLB_TOTAL_SIZE = (uint64_t)1048576 * 2 * CONFIG_EXTRA_HUGE_PAGES;
+    if (__unlikely(curr_size > HUGETLB_TOTAL_SIZE)) {
+        // TODO: low performance here. Just make the results right.
+        load_file_context extra_memfile;
+        extra_memfile.fd = C_CALL(memfd_create("use_index_extra", MFD_CLOEXEC));
+        extra_memfile.file_size = HUGETLB_TOTAL_SIZE;
+        C_CALL(ftruncate(extra_memfile.fd, HUGETLB_TOTAL_SIZE));
+
+        void* const extra_ptr = mmap_reserve_space(curr_size - HUGETLB_TOTAL_SIZE);
+        void* dummy_extra_ptr = mmap(
+            extra_ptr,
+            curr_size - HUGETLB_TOTAL_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_FIXED | MAP_SHARED | MAP_POPULATE,
+            extra_memfile.fd,
+            0);
+        CHECK(dummy_extra_ptr != MAP_FAILED, "mmap() failed");
+        ASSERT(dummy_extra_ptr == extra_ptr);
+
+        const bool success = g_query_context_shm.init_fixed(SHMKEY_QUERY_CONTEXT, HUGETLB_TOTAL_SIZE, true);
+        CHECK(success);
+        CHECK((uintptr_t)extra_ptr - (uintptr_t)mmap_reserve_space(0) == HUGETLB_TOTAL_SIZE);  // make sure no holes
+    }
+    else {
+        const bool success = g_query_context_shm.init_fixed(SHMKEY_QUERY_CONTEXT, curr_size, true);
+        CHECK(success);
+    }
 
     INFO("g_query_context_shm.shmid: %d", g_query_context_shm.shmid);
     INFO("g_query_context_shm.size_in_byte: %lu", g_query_context_shm.size_in_byte);
