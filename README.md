@@ -77,7 +77,7 @@ When creating index, we will try to determine whether all 3 texts file are in pa
 
 - If not (like in **Step 2**), we will try to create index, flush index to disk, drop page cache for index files, and reload all 3 text files to page cache. This should be relatively slow and takes 1~2 minutes. **This is to prepare for the next time that we create index (in Step 4)**
 
-**So please DO NOT skip Step 3. Otherwise you will get poor performance because index files are flushed to disk and their page caches are dropped.**
+**So please DO NOT skip Step 3. Otherwise you will get poor performance because index files (in Step 2) are flushed to disk and their page caches are dropped.**
 
 
 
@@ -225,18 +225,18 @@ We use quite a lot of x86-specific and Linux-specific optimizations in order to 
 
 Here attaches the performance tested on our side for reference.
 
-| Situation                                            | Time       |
+| Case                                                 | Time       |
 | ---------------------------------------------------- | ---------- |
 | Create index, without any page cache                 | ~ 2.5 min  |
-| Create index, with page cache                        | ~ 13 sec   |
-| 100 random queries, each selecting top 9000~10000    | ~ 0.23 sec |
-| 100 random queries, each selecting top 45000~50000   | ~ 0.45 sec |
-| 100 random queries, each selecting top 90000~100000  | ~ 0.65 sec |
-| 500 random queries, each selecting top 9000~10000    | ~ 0.96 sec |
-| 500 random queries, each selecting top 45000~50000   | ~ 1.83 sec |
-| 500 random queries, each selecting top 90000~100000  | ~ 2.85 sec |
-| 1000 random queries, each selecting top 9000~10000   | ~ 1.95 sec |
-| 1000 random queries, each selecting top 45000~50000  | ~ 3.60 sec |
-| 1000 random queries, each selecting top 90000~100000 | ~ 5.57 sec |
+| Create index, with page cache                        | ~ 12 sec   |
+| 100 random queries, each selecting top 9000~10000    | ~ 0.22 sec |
+| 100 random queries, each selecting top 45000~50000   | ~ 0.36 sec |
+| 100 random queries, each selecting top 90000~100000  | ~ 0.54 sec |
+| 500 random queries, each selecting top 9000~10000    | ~ 0.92 sec |
+| 500 random queries, each selecting top 45000~50000   | ~ 1.46 sec |
+| 500 random queries, each selecting top 90000~100000  | ~ 2.14 sec |
+| 1000 random queries, each selecting top 9000~10000   | ~ 1.83 sec |
+| 1000 random queries, each selecting top 45000~50000  | ~ 2.97 sec |
+| 1000 random queries, each selecting top 90000~100000 | ~ 4.32 sec |
 
 
