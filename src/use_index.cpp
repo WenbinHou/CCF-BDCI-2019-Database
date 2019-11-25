@@ -217,10 +217,15 @@ void scan_pretopn_heap(
         constexpr bool operator <(const plate_head_t& other) noexcept { return pretopn_value < other.pretopn_value; }
     };
 
-    uint32_t plate_head_count = (to_plate_id - from_plate_id + 1);
-    plate_head_t plate_heads[plate_head_count];
+    plate_head_t plate_heads[(to_plate_id - from_plate_id + 1)];
+    uint32_t plate_head_count = 0;
     for (uint32_t plate_id = from_plate_id; plate_id <= to_plate_id; ++plate_id) {
-        plate_head_t& head = plate_heads[plate_id - from_plate_id];
+        if (__unlikely(g_pretopn_count_start_ptr[plate_id] == 0)) {
+            // Current plate is empty
+            continue;
+        }
+
+        plate_head_t& head = plate_heads[plate_head_count++];
         head.plate_pos_curr = g_pretopn_start_ptr + (uint64_t)plate_id * CONFIG_EXPECT_MAX_TOPN;
         head.plate_pos_end = head.plate_pos_curr + g_pretopn_count_start_ptr[plate_id];
         head.pretopn_value = *head.plate_pos_curr;
@@ -229,6 +234,11 @@ void scan_pretopn_heap(
     std::make_heap(plate_heads, plate_heads + plate_head_count, std::less<>());
 
     result_length = 0;
+    if (__unlikely(plate_head_count == 0)) {
+        // All plates are empty
+        return;
+    }
+
     query_result_t* curr_result = &results[q_topn - 1];
     while (result_length < q_topn) {
         const uint64_t value = plate_heads[0].pretopn_value;
@@ -240,7 +250,9 @@ void scan_pretopn_heap(
         ++result_length;
 
         ++plate_heads[0].plate_pos_curr;
-        if (__unlikely(plate_heads[0].plate_pos_curr == plate_heads[0].plate_pos_end)) {
+        if (__unlikely(plate_heads[0].plate_pos_curr >= plate_heads[0].plate_pos_end)) {
+            ASSERT(plate_heads[0].plate_pos_curr == plate_heads[0].plate_pos_end);
+
             // plate_heads[0] comes to its end
             std::pop_heap(plate_heads, plate_heads + plate_head_count);  // remove plate_heads[0]
             --plate_head_count;
