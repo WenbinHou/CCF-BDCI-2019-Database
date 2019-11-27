@@ -1637,7 +1637,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_mid_max_expend" index (likely to skip mid buckets)
             ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
             const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_mid_max_expend < curr_min_expend)) {
                     continue;
@@ -1684,7 +1684,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_mid_max_expend" index (likely to skip mid buckets)
             ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
             const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_mid_max_expend < curr_min_expend)) {
                     continue;
@@ -1733,7 +1733,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_mid_max_expend" index (likely to skip mid buckets)
             ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
             const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_mid_max_expend < curr_min_expend)) {
                     continue;
@@ -1782,7 +1782,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_mid_max_expend" index (likely to skip mid buckets)
             ASSERT(g_only_mid_max_expend_start_ptr != nullptr);
             const uint32_t only_mid_max_expend = g_only_mid_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_mid_max_expend < curr_min_expend)) {
                     continue;
@@ -1845,7 +1845,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_minor_max_expend" index (likely to skip minor buckets)
             ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
             const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_minor_max_expend < curr_min_expend)) {
                     continue;
@@ -1892,7 +1892,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_minor_max_expend" index (likely to skip minor buckets)
             ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
             const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_minor_max_expend < curr_min_expend)) {
                     continue;
@@ -1941,7 +1941,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_minor_max_expend" index (likely to skip minor buckets)
             ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
             const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_minor_max_expend < curr_min_expend)) {
                     continue;
@@ -1990,7 +1990,7 @@ void fn_worker_thread_use_index(const uint32_t tid) noexcept
             // Check "only_minor_max_expend" index (likely to skip minor buckets)
             ASSERT(g_only_minor_max_expend_start_ptr != nullptr);
             const uint32_t only_minor_max_expend = g_only_minor_max_expend_start_ptr[bucket_id];
-            if (__likely(ctx->results_length > 0)) {
+            if (__likely(ctx->results_length == ctx->q_topn)) {
                 const uint32_t curr_min_expend = ctx->results[0].total_expend_cent;
                 if (__likely(only_minor_max_expend < curr_min_expend)) {
                     continue;
