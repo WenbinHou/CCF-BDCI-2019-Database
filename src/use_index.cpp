@@ -330,11 +330,12 @@ void scan_minor_index_nocheck_orderdate_maybe_check_shipdate(
     /*in,opt*/ [[maybe_unused]] const date_t q_shipdate) noexcept
 {
     [[maybe_unused]] __m256i curr_min_expend_cent;
-    if (__likely(result_length > 0)) {
-        curr_min_expend_cent = _mm256_set1_epi32(results[0].total_expend_cent);
+    if (__unlikely(result_length < q_topn)) {
+        curr_min_expend_cent = _mm256_setzero_si256();
     }
     else {
-        curr_min_expend_cent = _mm256_setzero_si256();
+        ASSERT(result_length == q_topn);
+        curr_min_expend_cent = _mm256_set1_epi32(results[0].total_expend_cent);
     }
 
 
