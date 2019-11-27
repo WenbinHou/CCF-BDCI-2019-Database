@@ -72,8 +72,7 @@ rm -rf /data/index
 方案一： // 更简明
     步骤1 | 删除索引文件夹（如果已存在）；重启 VM，减小任何未知的影响
     步骤2 | 运行指令：`cat customer.txt orders.txt lineitem.txt >/dev/null`，这大约需要 1.5min
-    步骤3 | 多次运行 `run.sh`（比如运行10次）。第一次运行时，将会建立索引目录
-          | `data/index`，之后的速度会以数量级地加快
+    步骤3 | 多次运行 `run.sh`（比如运行10次）。第一次运行时，将会建立索引目录 `data/index`，之后的速度会以数量级地加快
 
     测试完成。应该只基于“步骤3”计算成绩。
 
@@ -82,8 +81,7 @@ rm -rf /data/index
     步骤1 | 删除索引文件夹（如果已存在）；重启 VM，减小任何未知的影响
     步骤2 | 运行 `run.sh` - 此次运行相对较慢，因为我们必须从磁盘上读取文件
     步骤3 | 清除生成的索引 `data/index`
-    步骤4 | 多次运行 `run.sh`（比如运行10次）。第一次运行时，将会建立索引目录
-          | `data/index`，之后的速度会以数量级地加快
+    步骤4 | 多次运行 `run.sh`（比如运行10次）。第一次运行时，将会建立索引目录 `data/index`，之后的速度会以数量级地加快
 
     测试完成。应该只基于“步骤4”计算成绩。
 
@@ -204,7 +202,7 @@ ON mv_items
 
 基于此发现，我们还建立了另一个物化视图 mv_pretopn。在查询时，至多有
     (max_shipdate_orderdate_diff - min_shipdate_orderdate_diff)
-数量的 o_orderdates 需要从 mv_items 中扫描，其余大多数的 o_orderdates 从 mv_pretopn 中扫描。
+数量的 o_orderdate 需要从 mv_items 中扫描，其余大多数的 o_orderdate 从 mv_pretopn 中扫描。
 
 
 mv_pretopn 基本可以由如下 SQL 语句描述：
@@ -293,7 +291,7 @@ mv_pretopn 上的索引比 mv_items 上的索引要小很多，也高效很多�
 
 （2）做查询时为何没有使用 GPU：现在的查询量不够大。
 CUDA 的初始化较慢，退出也较慢，适合在一次启动后做大量工作再退出。
-如果每一批查询的数量达到上万，或程序长期运行（streamming query），使用 GPU 更合适。
+如果每一批查询的数量达到上万，或程序长期运行（streaming query），使用 GPU 更合适。
 可能的解决方案有：
     - 程序长期运行，查询源源不断（这更贴合真实场景）
     - 每一批查询数量更大
